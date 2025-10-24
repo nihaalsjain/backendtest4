@@ -20,7 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from tools.RAG_tools import (
     is_vehicle_related, extract_vehicle_model, search_vehicle_documents,
     grade_document_relevance, search_web_for_vehicle_info, search_youtube_videos,
-    format_diagnostic_results, llm as tools_llm, enhance_question_with_vehicle
+    format_diagnostic_results, create_voice_summary, llm as tools_llm, enhance_question_with_vehicle
 )
 
 # Configure detailed logging
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 TOOLS = [
     is_vehicle_related, extract_vehicle_model, search_vehicle_documents,
     grade_document_relevance, search_web_for_vehicle_info, search_youtube_videos,
-    format_diagnostic_results, enhance_question_with_vehicle
+    format_diagnostic_results, create_voice_summary, enhance_question_with_vehicle
 ]
 
 class SessionManager:
