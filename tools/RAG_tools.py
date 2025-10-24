@@ -88,71 +88,6 @@ def _get_nlp():
 # TOOL FUNCTIONS (Complete from version3_refactor.py)
 # -------------------------
 
-@tool
-def enhance_question_with_vehicle(question: str, vehicle_info: str = None, thread_id: str = "default") -> dict:
-    """Enhance the user's question by incorporating vehicle information."""
-    
-    logger.info(f"🔍 RAG TOOL CALLED: enhance_question_with_vehicle")
-    logger.info(f"🔍 Original question: {question}")
-    logger.info(f"🔍 Vehicle info: {vehicle_info}")
-    logger.info(f"🔍 Thread ID: {thread_id}")
-    
-    # Print vehicle info being used for this query
-    print(f"🚗 VEHICLE INFO USED: {vehicle_info if vehicle_info else 'None'}")
-    
-    if not vehicle_info:
-        return {
-            "enhanced_question": question,
-            "vehicle_added": False,
-            "message": "No vehicle information to add"
-        }
-    
-    # Check if question already contains the vehicle info
-    question_lower = question.lower()
-    vehicle_lower = vehicle_info.lower()
-    
-    if vehicle_lower in question_lower:
-        logger.info("Question already contains vehicle information")
-        return {
-            "enhanced_question": question,
-            "vehicle_added": False,
-            "message": "Question already contains vehicle information"
-        }
-    
-    # Don't enhance if it's a DTC code question
-    if re.search(r'\b[PB]\d{4}\b', question):
-        logger.info("Question contains DTC code, not enhancing")
-        return {
-            "enhanced_question": question,
-            "vehicle_added": False,
-            "message": "DTC question - no enhancement needed"
-        }
-    
-    # Try to naturally incorporate vehicle info
-    enhanced_question = question
-    vehicle_added = False
-    
-    if "how" in question_lower and any(word in question_lower for word in ['change', 'replace', 'fix', 'repair']):
-        # Transform "how can i change brake pads" → "how can i change brake pads of Honda Civic"
-        enhanced_question = question.rstrip('?') + f" of {vehicle_info}?"
-        vehicle_added = True
-    elif "what" in question_lower:
-        # Transform "what is wrong with my engine" → "what is wrong with my Honda Civic engine"
-        enhanced_question = question.replace("my ", f"my {vehicle_info} ")
-        vehicle_added = True
-    else:
-        # Generic enhancement - add vehicle at the beginning
-        enhanced_question = f"{vehicle_info}: {question}"
-        vehicle_added = True
-    
-    logger.info(f"Enhanced question: {enhanced_question}")
-    
-    return {
-        "enhanced_question": enhanced_question,
-        "vehicle_added": vehicle_added,
-        "message": f"Enhanced question with {vehicle_info}"
-    }
-
 
 @tool
 def is_vehicle_related(question: str) -> dict:
@@ -340,14 +275,14 @@ def search_vehicle_documents(question: str, dtc_code: str = None, vehicle_info: 
         
         context = "\n\n".join(blocks)
         
-        # Use the SAME prompt structure as rag_test_basic.py
         prompt = (
-            "You are a helpful assistant. Answer the question ONLY using the provided context. "
-            "When referencing images, figures, or tables mentioned in the context, include them in your response. "
-            "If the answer is not present, reply exactly: I don't know.\n\n"
-            f"Question: {question}\n\nContext:\n{context}\n\nAnswer:"
-        )
-        
+        "You are a helpful assistant that **must preserve all markdown elements exactly as in the context**. "
+        "This includes tables, image links (`![Image](path.png)`), code blocks, and formatting.\n"
+        "When answering, if images or tables are present, reproduce them exactly as they appear in the context.\n"
+        "Do NOT summarize or describe them — just include them inline with the steps or content where they occur.\n"
+        "If information is not available, reply exactly: I don't know.\n\n"
+        f"Question: {question}\n\nContext:\n{context}\n\nAnswer (preserve markdown formatting):")
+
         response = llm.invoke(prompt)
         answer_text = response.content.strip()
         print(f"🤖 Direct LLM Answer: {answer_text}")
@@ -457,7 +392,6 @@ def format_content_with_media_enhanced(content: str, doc_num: int):
 def grade_document_relevance(question: str, document_content: str, chunk_label: str = "UNKNOWN") -> dict:
     """Grade the relevance of retrieved documents (EXACT from version3_refactor)."""
     logger.info(f"📊 Grading relevance for {chunk_label}")
-    
     print(f"🔍 GRADING DEBUG: chunk_label={chunk_label}, content_length={len(document_content if document_content else '')}")
 
     if not document_content or document_content == "No relevant information found in the PDF.":
@@ -594,30 +528,93 @@ def search_youtube_videos(query: str, dtc_code: str = None, vehicle_info: str = 
         return {"youtube_results": [], "success": False, "error": str(e)}
 
 @tool
+def create_voice_summary(detailed_content: str, dtc_code: Optional[str] = None) -> str:
+    """Create a concise voice summary optimized for TTS from detailed diagnostic content."""
+    logger.info("🎤 Creating concise voice summary for TTS")
+    
+    if not detailed_content or len(detailed_content.strip()) < 10:
+        return "I don't have sufficient information about this issue."
+    
+    try:
+        if dtc_code:
+            prompt = f"""
+Create a concise voice summary for TTS from this detailed diagnostic content about DTC code {dtc_code}.
+
+DETAILED CONTENT:
+{detailed_content[:2000]}
+
+Requirements for voice summary:
+- Maximum 3-4 sentences
+- Focus only on the main issue and primary solution
+- NO URLs, links, or references to images/videos
+- Use simple, clear language for TTS
+- Start with what the DTC code indicates
+- End with the most common solution
+
+Format: Just return the concise text, no formatting or bullet points.
+"""
+        else:
+            prompt = f"""
+Create a concise voice summary for TTS from this detailed diagnostic content.
+
+DETAILED CONTENT:
+{detailed_content[:2000]}
+
+Requirements for voice summary:
+- Maximum 3-4 sentences
+- Focus only on the main problem and primary solution
+- NO URLs, links, or references to images/videos
+- Use simple, clear language for TTS
+- Be direct and actionable
+
+Format: Just return the concise text, no formatting or bullet points.
+"""
+        
+        response = llm.invoke(prompt)
+        voice_summary = response.content.strip()
+        
+        # Clean up any remaining URLs or formatting
+        import re
+        voice_summary = re.sub(r'http[s]?://\S+', '', voice_summary)
+        voice_summary = re.sub(r'\[.*?\]', '', voice_summary)
+        voice_summary = re.sub(r'!\[.*?\]\(.*?\)', '', voice_summary)
+        voice_summary = re.sub(r'\*\*', '', voice_summary)
+        voice_summary = re.sub(r'##.*?\n', '', voice_summary)
+        voice_summary = ' '.join(voice_summary.split())  # Clean whitespace
+        
+        logger.info(f"✅ Voice summary created: {len(voice_summary)} characters")
+        return voice_summary
+        
+    except Exception as e:
+        logger.error(f"Error creating voice summary: {e}")
+        return "I found some information about this issue, but I'm having trouble summarizing it right now."
+
+@tool
 def format_diagnostic_results(
     question: str,
-    rag_answer: str,
+    document_content: str,
     web_results: Optional[List[dict]] = None,
     youtube_results: Optional[List[dict]] = None,
     dtc_code: Optional[str] = None,
     relevance_score: int = 0,
 ) -> dict:
-    """Format the final diagnostic results with separate voice and text outputs."""
-    logger.info("📝 Formatting final results with voice/text separation")
-    
-    print(f"🔍 DEBUG: Received relevance_score = {relevance_score}")
+    """Format the final diagnostic results with voice/text differentiation."""
+    logger.info("📝 Formatting final results with voice/text differentiation")
+    rag_answer = document_content
     
     # Handle the rag_answer properly - it might be JSON string from tool result
     if isinstance(rag_answer, str):
         try:
             # Try to parse as JSON first
             rag_data = json.loads(rag_answer)
+            # IMPORTANT: Use the original 'answer' field which contains images
             rag_content = rag_data.get('answer', rag_answer)
-            print(f"✅ Parsed JSON, extracted answer field")
+            print(f"✅ Parsed JSON, extracted answer field with length: {len(rag_content)}")
+            print(f"🖼️ Images preserved: {'![Image](' in rag_content}")
         except json.JSONDecodeError:
             # If not JSON, use as-is
             rag_content = rag_answer
-            print(f"✅ Using raw string content")
+            print(f"✅ Using raw string content with length: {len(rag_content)}")
     else:
         rag_content = str(rag_answer)
 
@@ -627,43 +624,52 @@ def format_diagnostic_results(
                    "No relevant information found" not in rag_content)
     
     # CRITICAL: Use relevance score to decide formatting logic
-    use_rag = has_rag_info and relevance_score == 1  # ← BOTH conditions needed
-    
-    print(f"🔍 DEBUG: has_rag_info={has_rag_info}, relevance_score={relevance_score}, use_rag={use_rag}")
+    use_rag = has_rag_info and relevance_score == 1  
     
     # If RAG has good info AND good relevance score, process it for steps/images/tables
     if use_rag:
         logger.info("Using RAG answer with step/image/table formatting")
-        processed_rag_content = process_content_with_inline_images(rag_content)
+        print(f"🎨 Processing RAG content with images...")
         
-        # Create voice summary (concise, no URLs/images)
-        voice_summary = _create_voice_summary(processed_rag_content, dtc_code)
+        # ENHANCED: Process content to preserve images and improve formatting
+        processed_rag_content = process_content_with_inline_images_enhanced(rag_content)
         
-        return json.dumps({
-            "formatted_response": processed_rag_content,
+        # Create voice summary from processed content
+        voice_summary = create_voice_summary(processed_rag_content, dtc_code)
+        
+        print(f"✅ Processed content length: {len(processed_rag_content)}")
+        print(f"🖼️ Final images preserved: {'![Image](' in processed_rag_content}")
+        print(f"🎤 Voice summary created: {len(voice_summary)} characters")
+        
+        return {
             "voice_output": voice_summary,
-            "text_output": processed_rag_content,
-            "source_type": "rag"
-        })
+            "text_output": {
+                "content": processed_rag_content,
+                "web_sources": [],
+                "youtube_videos": [],
+                "has_external_sources": False
+            }
+        }
     
     # If RAG is not relevant (score 0) OR has no content, use web search
     if not use_rag and (web_results or youtube_results):
         logger.info("No RAG info found OR low relevance score, using web search formatting logic")
         print(f"🌐 Using web search logic - relevance_score={relevance_score}")
         
-        # Prepare web search data
+        # Combine web search content
         web_content = "\n\n".join([r.get("content", "") for r in web_results or [] if "content" in r])
         source_urls = [{"url": r.get("url", ""), "title": r.get("title", "Web Source")} for r in web_results or [] if "url" in r][:3]
-        youtube_videos = []
         
-        # Process YouTube results with thumbnails
-        for video in (youtube_results or [])[:4]:
-            youtube_videos.append({
-                "url": video.get("url", ""),
-                "title": video.get("title", "YouTube Video"),
-                "thumbnail": video.get("thumbnail_hq", video.get("thumbnail_max", "")),
-                "video_id": video.get("video_id", "")
-            })
+        # Format YouTube videos with thumbnails
+        youtube_videos = []
+        if youtube_results:
+            for video in youtube_results[:4]:
+                youtube_videos.append({
+                    "url": video.get("url", ""),
+                    "title": video.get("title", "Diagnostic Video"),
+                    "thumbnail": video.get("thumbnail_hq", video.get("thumbnail_max", f"https://img.youtube.com/vi/{video.get('video_id', '')}/maxresdefault.jpg")),
+                    "video_id": video.get("video_id", "")
+                })
         
         # Choose appropriate prompt based on presence of DTC code
         if dtc_code:
@@ -709,54 +715,150 @@ WEB SEARCH RESULTS:
 
 Provide a detailed, helpful response that synthesizes all this information.
 If the RAG answer indicates "No relevant information found in the PDF", prioritize the web search results.
-Format your response in clear bullet points for easy reading.
 """
         
         try:
             response = llm.invoke(prompt_template)
             diagnostic_content = response.content.strip()
             
-            # Create voice summary (concise, no URLs/images)
-            voice_summary = _create_voice_summary(diagnostic_content, dtc_code)
-            
-            # Build structured text output with sources and media
-            text_output = {
-                "content": diagnostic_content,
-                "web_sources": source_urls,
-                "youtube_videos": youtube_videos,
-                "has_external_sources": len(source_urls) > 0 or len(youtube_videos) > 0
-            }
+            # Create voice summary from detailed content
+            voice_summary = create_voice_summary(diagnostic_content, dtc_code)
             
             logger.info("Generated structured diagnostic report from web sources")
-            return json.dumps({
-                "formatted_response": diagnostic_content,  # For backward compatibility
+            print(f"🎤 Voice summary created from web search: {len(voice_summary)} characters")
+            
+            return {
                 "voice_output": voice_summary,
-                "text_output": text_output,
-                "source_type": "web_search"
-            })
+                "text_output": {
+                    "content": diagnostic_content,
+                    "web_sources": source_urls,
+                    "youtube_videos": youtube_videos,
+                    "has_external_sources": True
+                }
+            }
         
         except Exception as e:
             logger.error(f"Error formatting results: {e}")
-            voice_summary = _create_voice_summary(rag_content, dtc_code)
-            return json.dumps({
-                "formatted_response": rag_content,
+            # Fallback with voice/text separation
+            voice_summary = create_voice_summary(rag_content, dtc_code)
+            return {
                 "voice_output": voice_summary,
-                "text_output": rag_content,
-                "source_type": "fallback"
-            })
+                "text_output": {
+                    "content": rag_content,
+                    "web_sources": [],
+                    "youtube_videos": [],
+                    "has_external_sources": False
+                }
+            }
     
     # Fallback: Return RAG content even if relevance is low (no web results available)
     logger.info("Fallback: Using RAG content despite low relevance (no web results)")
     print("⚠️ Fallback: No web results, using RAG content despite low relevance")
-    processed_rag_content = process_content_with_inline_images(rag_content)
-    voice_summary = _create_voice_summary(processed_rag_content, dtc_code)
+    processed_rag_content = process_content_with_inline_images_enhanced(rag_content)
+    voice_summary = create_voice_summary(processed_rag_content, dtc_code)
     
-    return json.dumps({
-        "formatted_response": processed_rag_content,
+    return {
         "voice_output": voice_summary,
-        "text_output": processed_rag_content,
-        "source_type": "rag_fallback"
-    })
+        "text_output": {
+            "content": processed_rag_content,
+            "web_sources": [],
+            "youtube_videos": [],
+            "has_external_sources": False
+        }
+    }
+
+def process_content_with_inline_images_enhanced(content: str) -> str:
+    """Enhanced processing to preserve images and improve step formatting."""
+    
+    if not content or len(content) < 10:
+        return content
+    
+    try:
+        lines = content.split('\n')
+        processed_lines = []
+        
+        for line in lines:
+            original_line = line
+            line = line.strip()
+            
+            # Skip empty lines but preserve them for spacing
+            if not line:
+                processed_lines.append("")
+                continue
+            
+            # ✅ CRITICAL: Preserve image references EXACTLY as they are
+            if '![Image](' in line:
+                processed_lines.append(f"\n{line}\n")  # Add spacing around images
+                print(f"🖼️ Preserved image: {line[:50]}...")
+                continue
+            
+            # Check for section headers (## DIAGNOSIS, etc.)
+            if line.startswith('##'):
+                processed_lines.append(f"\n**{line[2:].strip().upper()}**\n")
+                continue
+            
+            # Check for numbered steps with better formatting
+            step_match = re.match(r'^(\d+)\.\s*(.*)', line)
+            if step_match:
+                step_num = step_match.group(1)
+                step_text = step_match.group(2)
+                processed_lines.append(f"\n**Step {step_num}: {step_text}**\n")
+                continue
+            
+            # Check for YES/NO decision points and format them prominently
+            if line.startswith(('YES -', 'NO -', 'YES:', 'NO:')):
+                processed_lines.append(f"\n   ✅ **{line}**")
+                continue
+            
+            # Check for bullet points and sub-steps
+            elif line.startswith(('-', '•')):
+                processed_lines.append(f"   {line}")
+                continue
+            
+            # Check for table rows (contains | characters) - preserve exactly
+            elif '|' in line and len([c for c in line if c == '|']) >= 2:
+                processed_lines.append(line)  # Keep table formatting as-is
+                continue
+            
+            # Check for table separators
+            elif '---' in line and '|' in line:
+                processed_lines.append(line)
+                continue
+            
+            # Check for questions (ending with ?)
+            elif line.endswith('?'):
+                processed_lines.append(f"\n**{line}**")
+                continue
+            
+            # Check for "PART NUMBER" labels and similar
+            elif line.upper() in ['PART NUMBER', 'REPAIR PROCEDURE', 'DIAGNOSIS']:
+                processed_lines.append(f"\n**{line.upper()}**")
+                continue
+            
+            # Regular text - preserve as-is but check for special formatting
+            else:
+                if line:
+                    # Check if it's a procedure note or important info
+                    if any(keyword in line.lower() for keyword in ['check', 'remove', 'install', 'replace', 'update']):
+                        processed_lines.append(f"   • {line}")
+                    else:
+                        processed_lines.append(line)
+        
+        result = '\n'.join(processed_lines)
+        
+        # Final cleanup - ensure proper spacing around images
+        result = re.sub(r'\n{3,}', '\n\n', result)  # Max 2 consecutive newlines
+        
+        print(f"🎨 Enhanced processing complete:")
+        print(f"   - Original length: {len(content)}")
+        print(f"   - Processed length: {len(result)}")
+        print(f"   - Images preserved: {result.count('![Image](')}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in process_content_with_inline_images_enhanced: {e}")
+        return content
 
 def process_content_with_inline_images(content: str) -> str:
     """Process content to display images and tables inline with steps (EXACT from version3_refactor)."""
@@ -806,89 +908,11 @@ def process_content_with_inline_images(content: str) -> str:
         logger.error(f"Error in process_content_with_inline_images: {e}")
         return content
 
-def _create_voice_summary(content: str, dtc_code: Optional[str] = None) -> str:
-    """Create a concise voice-friendly summary without URLs, images, or markdown formatting."""
-    if not content:
-        return ""
-    
-    try:
-        # Remove markdown formatting and images
-        cleaned_content = re.sub(r'!\[.*?\]\(.*?\)', '', content)  # Remove image references
-        cleaned_content = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned_content)  # Remove bold formatting
-        cleaned_content = re.sub(r'\*(.*?)\*', r'\1', cleaned_content)  # Remove italic formatting
-        cleaned_content = re.sub(r'#{1,6}\s*(.*)', r'\1', cleaned_content)  # Remove headers
-        cleaned_content = re.sub(r'\|.*?\|', '', cleaned_content)  # Remove table rows
-        cleaned_content = re.sub(r'https?://[^\s]+', '', cleaned_content)  # Remove URLs
-        
-        # Split into lines and process
-        lines = [line.strip() for line in cleaned_content.split('\n') if line.strip()]
-        
-        # Extract key points for voice summary
-        voice_lines = []
-        max_lines = 8  # Limit for voice output
-        
-        for line in lines[:max_lines]:
-            # Skip empty lines and lines with only symbols
-            if line and not re.match(r'^[|\-\s]+$', line):
-                # Clean up bullet points
-                line = re.sub(r'^[\-\*]\s*', '', line)
-                voice_lines.append(line)
-        
-        # Create summary prompt for LLM
-        summary_content = '\n'.join(voice_lines)
-        
-        if dtc_code:
-            summary_prompt = f"""
-Create a concise voice summary for the diagnostic trouble code {dtc_code}.
-Based on this information: {summary_content}
-
-Provide a clear, conversational summary that:
-1. Explains what the code means
-2. Lists 2-3 main causes
-3. Suggests 2-3 key solutions
-4. Uses simple language suitable for voice output
-5. Is under 150 words
-
-Do not include URLs, references, or technical formatting.
-"""
-        else:
-            summary_prompt = f"""
-Create a concise voice summary of this automotive information:
-{summary_content}
-
-Provide a clear, conversational summary that:
-1. Addresses the main issue or question
-2. Lists key points or solutions
-3. Uses simple language suitable for voice output
-4. Is under 150 words
-
-Do not include URLs, references, or technical formatting.
-"""
-        
-        # Generate voice summary using LLM
-        response = llm.invoke(summary_prompt)
-        voice_summary = response.content.strip()
-        
-        # Final cleanup to ensure no URLs or formatting remain
-        voice_summary = re.sub(r'https?://[^\s]+', '', voice_summary)
-        voice_summary = re.sub(r'\*\*.*?\*\*', '', voice_summary)
-        voice_summary = re.sub(r'#{1,6}\s*', '', voice_summary)
-        
-        return voice_summary
-        
-    except Exception as e:
-        logger.error(f"Error creating voice summary: {e}")
-        # Fallback: return first few sentences of cleaned content
-        fallback = re.sub(r'[*#\[\](){}]', '', content)
-        sentences = fallback.split('.')[:3]
-        return '. '.join(sentences) + '.' if sentences else content[:200]
-
 # Export all tools
 __all__ = [
     "is_vehicle_related",
     "extract_vehicle_model", 
     "search_vehicle_documents",
-    "enhance_question_with_vehicle",
     "grade_document_relevance",
     "search_web_for_vehicle_info",
     "search_youtube_videos",
