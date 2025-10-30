@@ -575,12 +575,29 @@ def search_youtube_videos(query: str, dtc_code: str = None, vehicle_info: str = 
         
         for item in data.get("items", []):
             video_id = item["id"]["videoId"]
+            
+            # Get the best available thumbnail
+            thumbnails = item["snippet"]["thumbnails"]
+            thumbnail_url = ""
+            
+            # Priority order: maxres > high > medium > default
+            if "maxresdefault" in thumbnails:
+                thumbnail_url = thumbnails["maxresdefault"]["url"]
+            elif "high" in thumbnails:
+                thumbnail_url = thumbnails["high"]["url"]
+            elif "medium" in thumbnails:
+                thumbnail_url = thumbnails["medium"]["url"]
+            elif "default" in thumbnails:
+                thumbnail_url = thumbnails["default"]["url"]
+            else:
+                # Fallback to manual URL construction
+                thumbnail_url = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+            
             videos.append({
                 "url": f"https://www.youtube.com/watch?v={video_id}",
                 "video_id": video_id,
                 "title": item["snippet"]["title"],
-                "thumbnail_hq": item["snippet"]["thumbnails"].get("high", {}).get("url", ""),
-                "thumbnail_max": f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+                "thumbnail": thumbnail_url
             })
         
         logger.info(f"Found {len(videos)} YouTube videos")
@@ -647,10 +664,18 @@ def format_diagnostic_results(
         for video in youtube_results[:4]:  # Limit to 4 YouTube videos
             if "url" in video:
                 video_id = extract_youtube_video_id(video["url"])
+                
+                # Use the thumbnail from the video data, fallback to constructed URL
+                thumbnail_url = video.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg")
+                
+                # Ensure we don't use the default fallback image
+                if "default/default.jpg" in thumbnail_url:
+                    thumbnail_url = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+                
                 structured_youtube_videos.append({
                     "url": video["url"],
                     "title": video.get("title", "Diagnostic Video"),
-                    "thumbnail": video.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"),
+                    "thumbnail": thumbnail_url,
                     "video_id": video_id
                 })
     
@@ -671,7 +696,7 @@ def format_diagnostic_results(
                 processed_rag_content = re.sub(r'\n\s*\n\s*\n', '\n\n', processed_rag_content)
             processed_rag_content = processed_rag_content.strip()
         
-        # Clean any HTML artifacts
+        # Clean any HTML artifacts and decode Unicode escape sequences
         processed_rag_content = clean_html_artifacts(processed_rag_content)
         voice_summary = create_voice_summary(processed_rag_content, question)
         
@@ -758,7 +783,7 @@ Format your response with clear sections and bullet points for better readabilit
                     diagnostic_content = re.sub(r'\n\s*\n\s*\n', '\n\n', diagnostic_content)
                 diagnostic_content = diagnostic_content.strip()
             
-            # Clean any HTML artifacts
+            # Clean any HTML artifacts and decode Unicode escape sequences
             diagnostic_content = clean_html_artifacts(diagnostic_content)
             voice_summary = create_voice_summary(diagnostic_content, question)
             
@@ -858,14 +883,27 @@ def process_content_with_inline_images(content: str) -> str:
 
 
 def clean_html_artifacts(content: str) -> str:
-    """Remove HTML artifacts that might appear in content."""
+    """Remove HTML artifacts and properly decode Unicode escape sequences."""
     # Remove HTML tags
     content = re.sub(r'<[^>]+>', '', content)
     # Remove escaped quotes and other HTML entities
     content = content.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-    # Clean up multiple spaces and newlines
-    content = re.sub(r'\s+', ' ', content)
-    content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+    
+    # Decode common Unicode escape sequences
+    content = content.replace('\\u2022', '•')  # bullet point
+    content = content.replace('\\u2013', '–')  # en dash
+    content = content.replace('\\u2014', '—')  # em dash
+    content = content.replace('\\u201c', '"')  # left double quote
+    content = content.replace('\\u201d', '"')  # right double quote
+    content = content.replace('\\u2019', "'")  # right single quote
+    
+    # Replace escaped newlines with actual newlines
+    content = content.replace('\\n', '\n')
+    
+    # Clean up multiple spaces and newlines but preserve paragraph structure
+    content = re.sub(r' +', ' ', content)  # Multiple spaces to single space
+    content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)  # Multiple newlines to double newline
+    
     return content.strip()
 
 
