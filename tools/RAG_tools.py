@@ -696,17 +696,17 @@ Create a comprehensive diagnostic report that STRICTLY follows this EXACT format
 **Potential Causes:**
 • [cause 1]
 • [cause 2]
-• [continue until you have up to 8 causes, be specific and technical]
+• [continue until you have up to 3 causes, be specific and technical]
 
 **Diagnostic Steps:**
 • [step 1]
 • [step 2]
-• [continue until you have up to 5 clear diagnostic steps]
+• [continue until you have up to 3 clear diagnostic steps]
 
 **Possible Solutions:**
 • [solution 1]
 • [solution 2]
-• [continue until you have up to 8 solutions, be specific and technical]
+• [continue until you have up to 3 solutions, be specific and technical]
 
 Your response MUST follow this format exactly, with these exact section headings.
 Be concise and technical in your bullet points. Do not add any other sections or explanations.
@@ -850,33 +850,47 @@ def extract_youtube_video_id(url: str) -> str:
 def create_voice_summary(diagnostic_content: str, question: str) -> str:
     """Create a concise voice summary from detailed diagnostic content."""
     try:
-        # Create a concise summary for voice output
+        # Create a concise summary for voice output (3-4 sentences max)
         summary_prompt = f"""
 Based on this detailed diagnostic information:
 
-{diagnostic_content[:1000]}...
+{diagnostic_content[:800]}...
 
-Create a concise 2-3 sentence voice summary that answers the user's question: "{question}"
+Create a concise voice summary that answers the user's question: "{question}"
 
-Focus on the most important findings and actionable advice. Keep it conversational and under 100 words.
+Requirements:
+- Maximum 3-4 sentences
+- Focus on the most critical findings and immediate actions
+- Use conversational tone suitable for speech
+- Mention key diagnostic points but avoid lengthy explanations
+- Under 80 words total
+
+Example format: "The [code] indicates [main issue]. The primary causes are [brief list]. I recommend [key action]. Check the diagnostic panel for detailed steps and resources."
 """
         
         response = llm.invoke(summary_prompt)
         voice_summary = response.content.strip()
+        
+        # Ensure it's not too long for TTS
+        if len(voice_summary) > 300:
+            # Truncate to first 3 sentences if too long
+            sentences = voice_summary.split('.')
+            voice_summary = '. '.join(sentences[:3]) + '.'
         
         # Fallback to first paragraph if LLM fails
         if not voice_summary or len(voice_summary) < 20:
             lines = diagnostic_content.split('\n')
             for line in lines:
                 if line.strip() and len(line.strip()) > 30:
-                    return line.strip()[:200] + "..."
+                    # Create a simple summary from the content
+                    return f"I found diagnostic information for your question. {line.strip()[:150]}... Check the diagnostic panel for complete details."
         
         return voice_summary
         
     except Exception as e:
         logger.error(f"Error creating voice summary: {e}")
         # Simple fallback
-        return f"I found diagnostic information for your question about {question}. Please check the detailed report in the diagnostic panel."
+        return f"I found diagnostic information for your {question}. Please check the detailed report in the diagnostic panel for complete analysis, steps, and resources."
 
 # Export all tools
 __all__ = [

@@ -432,22 +432,27 @@ STEP 6: ALWAYS call grade_document_relevance
 - This determines if the retrieved information is sufficient
 
 STEP 7: Based on relevance score: 
-- IF score = 1: Skip web search, go to formatting
+- IF score = 1: Skip additional web search, but ALWAYS call search_youtube_videos for DTC codes
 - IF score = 0: Call search_web_for_vehicle_info AND search_youtube_videos
+- YouTube videos are valuable even when RAG content is good
 
 STEP 8: ALWAYS call format_diagnostic_results 
-- This creates your final response
+- IMPORTANT: Always include web_results and youtube_results if they were obtained in previous steps
+- Pass ALL available data: question, rag_answer, web_results, youtube_results, dtc_code, relevance_score
+- This creates your final response with all available information
 
 🚫 FORBIDDEN BEHAVIORS:
 - Do NOT answer questions directly without using tools
 - Do NOT use your knowledge about P0301, engine codes, or any automotive topics
 - Do NOT provide diagnostic advice without retrieving it through tools
 - Do NOT skip any steps in the workflow
+- Do NOT omit web_results or youtube_results from format_diagnostic_results if they exist
 
 ✅ REQUIRED RESPONSES:
 - If tools return no information: "I don't have specific information about this in my diagnostic database."
 - If you're tempted to answer from memory: STOP and use tools instead
 - Always base your response ONLY on tool results
+- Always include ALL available web sources and YouTube videos in the final formatting
 
 REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowledge comes ONLY from the tools.
 """)
@@ -938,12 +943,32 @@ class DiagnosticLLMStream(LLMStream):
             # Check if response is structured JSON
             try:
                 parsed_response = json.loads(response)
-                if isinstance(parsed_response, dict) and 'voice_output' in parsed_response and 'text_output' in parsed_response:
-                    # This is a structured response
-                    logger.info("📱 Received structured response from diagnostic agent")
+                
+                # Check for the new structured format with nested formatted_response
+                if (isinstance(parsed_response, dict) and 
+                    'formatted_response' in parsed_response and
+                    isinstance(parsed_response['formatted_response'], dict)):
                     
-                    # For LiveKit, we need to send both voice and text
-                    # The session will handle splitting voice vs text output
+                    formatted_data = parsed_response['formatted_response']
+                    if 'voice_output' in formatted_data and 'text_output' in formatted_data:
+                        # This is the new structured response format
+                        logger.info("📱 Received structured response from diagnostic agent (new format)")
+                        
+                        voice_output = formatted_data.get('voice_output', '')
+                        text_output = formatted_data.get('text_output', {})
+                        
+                        # Format the response for LiveKit using the VOICE|||TEXT pattern
+                        formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
+                        logger.info(f"📡 Sending structured response to LiveKit: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                        
+                        return formatted_response
+                
+                # Check for direct structured format (legacy)
+                elif (isinstance(parsed_response, dict) and 
+                      'voice_output' in parsed_response and 'text_output' in parsed_response):
+                    # This is the legacy structured response format
+                    logger.info("📱 Received structured response from diagnostic agent (legacy format)")
+                    
                     voice_output = parsed_response.get('voice_output', '')
                     text_output = parsed_response.get('text_output', {})
                     
@@ -953,10 +978,13 @@ class DiagnosticLLMStream(LLMStream):
                     
                     return formatted_response
                 else:
-                    # Not a structured response, return as-is
+                    # Not a recognized structured response, return as-is
+                    logger.info("📝 Received plain text response from diagnostic agent")
                     return response
+                    
             except (json.JSONDecodeError, TypeError):
                 # Not JSON, return as-is
+                logger.info("📝 Received non-JSON response from diagnostic agent")
                 return response
                 
         except Exception as e:
