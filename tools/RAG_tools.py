@@ -658,6 +658,21 @@ def format_diagnostic_results(
     if use_rag:
         logger.info("Using RAG answer with step/image/table formatting")
         processed_rag_content = process_content_with_inline_images(rag_content)
+        
+        # Remove YouTube URLs from content since we have them in structured format
+        if structured_youtube_videos:
+            for video in structured_youtube_videos:
+                video_url = video["url"]
+                # Remove the URL from the main content (handle various line formats)
+                processed_rag_content = processed_rag_content.replace(video_url, "")
+                # Also remove common patterns like "- {url}" or "• {url}"
+                processed_rag_content = re.sub(rf'^[•\-\*]\s*{re.escape(video_url)}\s*$', '', processed_rag_content, flags=re.MULTILINE)
+                # Clean up empty lines
+                processed_rag_content = re.sub(r'\n\s*\n\s*\n', '\n\n', processed_rag_content)
+            processed_rag_content = processed_rag_content.strip()
+        
+        # Clean any HTML artifacts
+        processed_rag_content = clean_html_artifacts(processed_rag_content)
         voice_summary = create_voice_summary(processed_rag_content, question)
         
         return {
@@ -730,6 +745,21 @@ Format your response with clear sections and bullet points for better readabilit
         try:
             response = llm.invoke(prompt_template)
             diagnostic_content = response.content.strip()
+            
+            # Remove YouTube URLs from content since we have them in structured format
+            if structured_youtube_videos:
+                for video in structured_youtube_videos:
+                    video_url = video["url"]
+                    # Remove the URL from the main content (handle various line formats)
+                    diagnostic_content = diagnostic_content.replace(video_url, "")
+                    # Also remove common patterns like "- {url}" or "• {url}"
+                    diagnostic_content = re.sub(rf'^[•\-\*]\s*{re.escape(video_url)}\s*$', '', diagnostic_content, flags=re.MULTILINE)
+                    # Clean up empty lines
+                    diagnostic_content = re.sub(r'\n\s*\n\s*\n', '\n\n', diagnostic_content)
+                diagnostic_content = diagnostic_content.strip()
+            
+            # Clean any HTML artifacts
+            diagnostic_content = clean_html_artifacts(diagnostic_content)
             voice_summary = create_voice_summary(diagnostic_content, question)
             
             logger.info("Generated structured diagnostic report from web sources")
@@ -825,6 +855,18 @@ def process_content_with_inline_images(content: str) -> str:
     except Exception as e:
         logger.error(f"Error in process_content_with_inline_images: {e}")
         return content
+
+
+def clean_html_artifacts(content: str) -> str:
+    """Remove HTML artifacts that might appear in content."""
+    # Remove HTML tags
+    content = re.sub(r'<[^>]+>', '', content)
+    # Remove escaped quotes and other HTML entities
+    content = content.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+    # Clean up multiple spaces and newlines
+    content = re.sub(r'\s+', ' ', content)
+    content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+    return content.strip()
 
 
 def extract_youtube_video_id(url: str) -> str:
