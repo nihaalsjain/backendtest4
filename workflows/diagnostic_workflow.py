@@ -731,24 +731,40 @@ REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowled
                     "en": "Sorry, I'm not sure if this is related to a vehicle. Could you please ask me specifically about vehicle-related questions?",
                 }[self.target_language]
             
-            # Extract assistant response
+            # Extract assistant response and check for structured format
             for msg in reversed(messages):
                 if hasattr(msg, "content") and msg.content and not isinstance(msg, HumanMessage):
-                    # Validate the response doesn't contain generic automotive knowledge
-                    if self._contains_generic_knowledge(msg.content):
-                        logger.warning("⚠️ Response contains generic knowledge, not tool output")
-                        if self.current_conversation_id:
-                            conversation_logger.log_error(
-                                self.current_conversation_id,
-                                "Response contains generic knowledge instead of RAG output",
-                                "Knowledge validation failed"
-                            )
-                        return {
-                            "hi": "ध्यान दें: यह उत्तर डायग्नोस्टिक डेटाबेस के बजाय सामान्य ज्ञान पर आधारित है।",
-                            "kn": "ಗಮನಿಸಿ: ಈ ಉತ್ತರವು ಡಯಗ್ನೋಸ್ಟಿಕ್ ಡೇಟಾಬೇಸ್‌ಗಿಂತ ಸಾಮಾನ್ಯ ಜ್ಞಾನ ಆಧಾರಿತವಾಗಿದೆ.",
-                            "en": "I should let you know: I'm answering this using my pre-trained/existing knowledge, not from the diagnostic database.",
-                        }[self.target_language]
-                    return msg.content
+                    # Check if this is a tool message with structured response
+                    if hasattr(msg, 'name') and msg.name == 'format_diagnostic_results':
+                        # This is the response from format_diagnostic_results tool
+                        try:
+                            tool_result = json.loads(msg.content)
+                            if 'formatted_response' in tool_result:
+                                formatted_response = tool_result['formatted_response']
+                                # Return structured JSON response
+                                return json.dumps(formatted_response)
+                        except (json.JSONDecodeError, KeyError) as e:
+                            logger.warning(f"Failed to parse structured response: {e}")
+                            # Fall back to plain text
+                            return msg.content
+                    
+                    # Regular assistant message (non-tool)
+                    elif not hasattr(msg, 'name'):
+                        # Validate the response doesn't contain generic automotive knowledge
+                        if self._contains_generic_knowledge(msg.content):
+                            logger.warning("⚠️ Response contains generic knowledge, not tool output")
+                            if self.current_conversation_id:
+                                conversation_logger.log_error(
+                                    self.current_conversation_id,
+                                    "Response contains generic knowledge instead of RAG output",
+                                    "Knowledge validation failed"
+                                )
+                            return {
+                                "hi": "ध्यान दें: यह उत्तर डायग्नोस्टिक डेटाबेस के बजाय सामान्य ज्ञान पर आधारित है।",
+                                "kn": "ಗಮನಿಸಿ: ಈ ಉತ್ತರವು ಡಯಗ್ನೋಸ್ಟಿಕ್ ಡೇಟಾಬೇಸ್‌ಗಿಂತ ಸಾಮಾನ್ಯ ಜ್ಞಾನ ಆಧಾರಿತವಾಗಿದೆ.",
+                                "en": "I should let you know: I'm answering this using my pre-trained/existing knowledge, not from the diagnostic database.",
+                            }[self.target_language]
+                        return msg.content
             
             return {
                 "hi": "क्षमा करें, मैं आपके अनुरोध को प्रोसेस नहीं कर सका।",
@@ -915,9 +931,34 @@ class DiagnosticLLMStream(LLMStream):
             )
 
     async def _get_response(self) -> str:
-        """Get the response from the diagnostic agent."""
+        """Get the response from the diagnostic agent and handle structured format."""
         try:
-            return await self._agent.chat(self._message)
+            response = await self._agent.chat(self._message)
+            
+            # Check if response is structured JSON
+            try:
+                parsed_response = json.loads(response)
+                if isinstance(parsed_response, dict) and 'voice_output' in parsed_response and 'text_output' in parsed_response:
+                    # This is a structured response
+                    logger.info("📱 Received structured response from diagnostic agent")
+                    
+                    # For LiveKit, we need to send both voice and text
+                    # The session will handle splitting voice vs text output
+                    voice_output = parsed_response.get('voice_output', '')
+                    text_output = parsed_response.get('text_output', {})
+                    
+                    # Format the response for LiveKit using the VOICE|||TEXT pattern
+                    formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
+                    logger.info(f"📡 Sending structured response to LiveKit: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                    
+                    return formatted_response
+                else:
+                    # Not a structured response, return as-is
+                    return response
+            except (json.JSONDecodeError, TypeError):
+                # Not JSON, return as-is
+                return response
+                
         except Exception as e:
             logger.exception("Error getting response from diagnostic agent")
             return f"I apologize, but I encountered an error processing your request: {e}"

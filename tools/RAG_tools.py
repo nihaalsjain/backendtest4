@@ -602,7 +602,7 @@ def format_diagnostic_results(
     dtc_code: Optional[str] = None,
     relevance_score: int = 0,
 ) -> dict:
-    """Format the final diagnostic results with proper structure (EXACT from version3_refactor)."""
+    """Format the final diagnostic results with proper structure for frontend."""
     logger.info("📝 Formatting final results")
     
     print(f"🔍 DEBUG: Received relevance_score = {relevance_score}")
@@ -631,11 +631,46 @@ def format_diagnostic_results(
     
     print(f"🔍 DEBUG: has_rag_info={has_rag_info}, relevance_score={relevance_score}, use_rag={use_rag}")
     
+    # Prepare structured web sources and YouTube videos
+    structured_web_sources = []
+    structured_youtube_videos = []
+    
+    if web_results:
+        for result in web_results[:3]:  # Limit to 3 web sources
+            if "url" in result and "title" in result:
+                structured_web_sources.append({
+                    "url": result["url"],
+                    "title": result.get("title", "Web Source")
+                })
+    
+    if youtube_results:
+        for video in youtube_results[:4]:  # Limit to 4 YouTube videos
+            if "url" in video:
+                video_id = extract_youtube_video_id(video["url"])
+                structured_youtube_videos.append({
+                    "url": video["url"],
+                    "title": video.get("title", "Diagnostic Video"),
+                    "thumbnail": video.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"),
+                    "video_id": video_id
+                })
+    
     # If RAG has good info AND good relevance score, process it for steps/images/tables
     if use_rag:
         logger.info("Using RAG answer with step/image/table formatting")
         processed_rag_content = process_content_with_inline_images(rag_content)
-        return {"formatted_response": processed_rag_content}
+        voice_summary = create_voice_summary(processed_rag_content, question)
+        
+        return {
+            "formatted_response": {
+                "voice_output": voice_summary,
+                "text_output": {
+                    "content": processed_rag_content,
+                    "web_sources": structured_web_sources,
+                    "youtube_videos": structured_youtube_videos,
+                    "has_external_sources": len(structured_web_sources) > 0 or len(structured_youtube_videos) > 0
+                }
+            }
+        }
     
     # If RAG is not relevant (score 0) OR has no content, use web search
     if not use_rag and (web_results or youtube_results):
@@ -644,8 +679,6 @@ def format_diagnostic_results(
         
         # Combine web search content
         web_content = "\n\n".join([r.get("content", "") for r in web_results or [] if "content" in r])
-        source_urls = [r.get("url", "") for r in web_results or [] if "url" in r][:3]
-        youtube_links = [video.get("url", "") for video in youtube_results or []][:4]
         
         # Choose appropriate prompt based on presence of DTC code
         if dtc_code:
@@ -658,22 +691,22 @@ WEB SEARCH RESULTS: {web_content}
 
 Create a comprehensive diagnostic report that STRICTLY follows this EXACT format:
 
-Category: [one-line description of what this DTC code represents]
+**Category:** [one-line description of what this DTC code represents]
 
-Potential Causes:
-- [cause 1]
-- [cause 2]
-- [continue until you have up to 8 causes, be specific and technical]
+**Potential Causes:**
+• [cause 1]
+• [cause 2]
+• [continue until you have up to 8 causes, be specific and technical]
 
-Diagnostic Steps:
-- [step 1]
-- [step 2]
-- [continue until you have up to 5 clear diagnostic steps]
+**Diagnostic Steps:**
+• [step 1]
+• [step 2]
+• [continue until you have up to 5 clear diagnostic steps]
 
-Possible Solutions:
-- [solution 1]
-- [solution 2]
-- [continue until you have up to 8 solutions, be specific and technical]
+**Possible Solutions:**
+• [solution 1]
+• [solution 2]
+• [continue until you have up to 8 solutions, be specific and technical]
 
 Your response MUST follow this format exactly, with these exact section headings.
 Be concise and technical in your bullet points. Do not add any other sections or explanations.
@@ -691,39 +724,59 @@ WEB SEARCH RESULTS:
 
 Provide a detailed, helpful response that synthesizes all this information.
 If the RAG answer indicates "No relevant information found in the PDF", prioritize the web search results.
+Format your response with clear sections and bullet points for better readability.
 """
         
         try:
             response = llm.invoke(prompt_template)
             diagnostic_content = response.content.strip()
-            
-            # Build the final formatted answer
-            final_answer = diagnostic_content
-            
-            # Add source URLs section (web)
-            if source_urls:
-                final_answer += "\n\n🕸️ Web Sources:\n"
-                for url in source_urls:
-                    final_answer += f"- {url}\n"
-            
-            # Add YouTube links section
-            if youtube_links:
-                final_answer += "\n\n📺 YouTube Diagnostic Videos:\n"
-                for link in youtube_links:
-                    final_answer += f"- {link}\n"
+            voice_summary = create_voice_summary(diagnostic_content, question)
             
             logger.info("Generated structured diagnostic report from web sources")
-            return {"formatted_response": final_answer}
+            return {
+                "formatted_response": {
+                    "voice_output": voice_summary,
+                    "text_output": {
+                        "content": diagnostic_content,
+                        "web_sources": structured_web_sources,
+                        "youtube_videos": structured_youtube_videos,
+                        "has_external_sources": len(structured_web_sources) > 0 or len(structured_youtube_videos) > 0
+                    }
+                }
+            }
         
         except Exception as e:
             logger.error(f"Error formatting results: {e}")
-            return {"formatted_response": rag_content}  # Fallback to original answer
+            voice_summary = create_voice_summary(rag_content, question)
+            return {
+                "formatted_response": {
+                    "voice_output": voice_summary,
+                    "text_output": {
+                        "content": rag_content,
+                        "web_sources": structured_web_sources,
+                        "youtube_videos": structured_youtube_videos,
+                        "has_external_sources": len(structured_web_sources) > 0 or len(structured_youtube_videos) > 0
+                    }
+                }
+            }
     
     # Fallback: Return RAG content even if relevance is low (no web results available)
     logger.info("Fallback: Using RAG content despite low relevance (no web results)")
     print("⚠️ Fallback: No web results, using RAG content despite low relevance")
     processed_rag_content = process_content_with_inline_images(rag_content)
-    return {"formatted_response": processed_rag_content}
+    voice_summary = create_voice_summary(processed_rag_content, question)
+    
+    return {
+        "formatted_response": {
+            "voice_output": voice_summary,
+            "text_output": {
+                "content": processed_rag_content,
+                "web_sources": structured_web_sources,
+                "youtube_videos": structured_youtube_videos,
+                "has_external_sources": len(structured_web_sources) > 0 or len(structured_youtube_videos) > 0
+            }
+        }
+    }
 
 def process_content_with_inline_images(content: str) -> str:
     """Process content to display images and tables inline with steps (EXACT from version3_refactor)."""
@@ -772,6 +825,58 @@ def process_content_with_inline_images(content: str) -> str:
     except Exception as e:
         logger.error(f"Error in process_content_with_inline_images: {e}")
         return content
+
+
+def extract_youtube_video_id(url: str) -> str:
+    """Extract YouTube video ID from URL."""
+    import re
+    
+    # Match various YouTube URL formats
+    patterns = [
+        r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]+)',
+        r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]+)',
+        r'(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    # If no match found, return a default ID
+    return "dQw4w9WgXcQ"  # Rick Roll as fallback :)
+
+
+def create_voice_summary(diagnostic_content: str, question: str) -> str:
+    """Create a concise voice summary from detailed diagnostic content."""
+    try:
+        # Create a concise summary for voice output
+        summary_prompt = f"""
+Based on this detailed diagnostic information:
+
+{diagnostic_content[:1000]}...
+
+Create a concise 2-3 sentence voice summary that answers the user's question: "{question}"
+
+Focus on the most important findings and actionable advice. Keep it conversational and under 100 words.
+"""
+        
+        response = llm.invoke(summary_prompt)
+        voice_summary = response.content.strip()
+        
+        # Fallback to first paragraph if LLM fails
+        if not voice_summary or len(voice_summary) < 20:
+            lines = diagnostic_content.split('\n')
+            for line in lines:
+                if line.strip() and len(line.strip()) > 30:
+                    return line.strip()[:200] + "..."
+        
+        return voice_summary
+        
+    except Exception as e:
+        logger.error(f"Error creating voice summary: {e}")
+        # Simple fallback
+        return f"I found diagnostic information for your question about {question}. Please check the detailed report in the diagnostic panel."
 
 # Export all tools
 __all__ = [
