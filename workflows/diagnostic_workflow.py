@@ -376,14 +376,7 @@ class AsyncDiagnosticAgent:
                 await asyncio.gather(*self._active_tasks, return_exceptions=True)
             except Exception as e:
                 logger.warning(f"Exception during task cleanup: {e}")
-        
         self._active_tasks.clear()
-        
-        # Log session end
-        session_info = conversation_logger.get_session_info()
-        logger.info(f"🔚 SESSION ENDING: {session_info['session_id']}")
-        logger.info(f"   Total Conversations: {session_info['conversations_count']}")
-        logger.info(f"   Session Directory: {session_info['session_directory']}")
         logger.info("Diagnostic agent cleanup complete")
         
     async def _build_graph(self):
@@ -392,17 +385,17 @@ class AsyncDiagnosticAgent:
         
         def assistant_node(state: MessagesState):
             # NEW: language directives injected into the system message
-            lang_directives = {
-                "en": "Always respond in natural English.",
-                "hi": "अब से हर उत्तर स्वाभाविक हिन्दी (hi-IN) में दें। वाक्य छोटे रखें ताकि TTS स्पष्ट हो।",
-                "kn": "ಈಗಿನಿಂದ ಎಲ್ಲ ಉತ್ತರಗಳನ್ನು ಸ್ವಾಭಾವಿಕ ಕನ್ನಡ (kn-IN) ನಲ್ಲಿ ನೀಡಿ. TTS ಗೆ ಹೊಂದುವಂತೆ ವಾಕ್ಯಗಳನ್ನು ಚಿಕ್ಕದಾಗಿಡಿ.",
+            # Build dynamic language instruction
+            lang_map = {
+                'en': 'Respond in clear, simple English.',
+                'hi': 'उत्तर स्वाभाविक हिन्दी में दें।',
+                'kn': 'ಉತ್ತರವನ್ನು ಸಹಜ ಕನ್ನಡದಲ್ಲಿ ನೀಡಿ.',
+                'ta': 'பதில் இயல்பான தமிழில் வழங்கவும்.'
             }
-            language_instruction = lang_directives.get(self.target_language, lang_directives["en"])
-
+            language_instruction_text = lang_map.get(self.target_language, lang_map['en'])
             system_msg = SystemMessage(content=f"""
-You are Allion, a RAG-based automotive diagnostic assistant.
-
-{language_instruction}
+ You are Allion, a RAG-based automotive diagnostic assistant.
+ {language_instruction_text}
 
 🚫 CRITICAL RESTRICTION: You are FORBIDDEN from using your pre-trained knowledge about vehicles.
 🚫 You MUST NOT answer any automotive question without using the provided tools.
@@ -747,8 +740,18 @@ REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowled
                             tool_result = json.loads(msg.content)
                             if 'formatted_response' in tool_result:
                                 formatted_response = tool_result['formatted_response']
-                                # Return structured JSON response
-                                return json.dumps(formatted_response)
+                                
+                                # CRITICAL: Extract and store text_output internally
+                                # Only return voice_output for final_response logging
+                                voice_output = formatted_response.get('voice_output', '')
+                                text_output = formatted_response.get('text_output', {})
+                                
+                                # Store text internally for LiveKit stream
+                                self._diagnostic_text_payload = json.dumps(text_output)
+                                logger.info(f"📊 Extracted text_output, stored internally. Voice: {len(voice_output)} chars, Text payload: {len(self._diagnostic_text_payload)} chars")
+                                
+                                # Return ONLY voice_output for logging and LLM stream
+                                return voice_output
                         except (json.JSONDecodeError, KeyError) as e:
                             logger.warning(f"Failed to parse structured response: {e}")
                             # Fall back to plain text
@@ -907,61 +910,51 @@ class DiagnosticLLMStream(LLMStream):
         pass
 
     async def __anext__(self) -> ChatChunk:
-        """Get the next chunk from the stream."""
-        # If we already sent both parts, stop.
+        """Get the next chunk from the stream.
+        
+        First chunk: voice only (safe for TTS)
+        Second chunk: TEXT_ONLY prefixed diagnostic JSON (for frontend panel)
+        """
+        # If both parts sent, stop.
         if getattr(self, '_voice_sent', False) and getattr(self, '_text_sent', False):
             raise StopAsyncIteration
-            
+
         if self._response_future is None:
             self._response_future = asyncio.create_task(self._get_response())
-        
+
         try:
-            # Await the full combined response (may contain VOICE|||TEXT pattern)
-            if not getattr(self, '_response_buffer', None):
-                full = await self._response_future
-                self._response_buffer = full
-
-            full_response = self._response_buffer
-
-            # Pattern split: VOICE:...|||TEXT:{json}
-            if isinstance(full_response, str):
-                m = re.match(r'^VOICE:([\s\S]*?)\|\|\|TEXT:([\s\S]+)$', full_response)
-                if m:
-                    voice_part = m.group(1).strip()
-                    text_part = m.group(2).strip()
-                    # First yield voice only (for TTS)
-                    if not getattr(self, '_voice_sent', False):
-                        self._voice_sent = True
-                        return ChatChunk(
-                            id="diagnostic_voice",
-                            delta=ChoiceDelta(
-                                role="assistant",
-                                content=voice_part  # ONLY voice summary
-                            )
-                        )
-                    # Then yield diagnostic JSON separately, prefixed so TTS systems can ignore
-                    if not getattr(self, '_text_sent', False):
-                        self._text_sent = True
-                        # Wrap in TEXT_ONLY: prefix
-                        return ChatChunk(
-                            id="diagnostic_text",
-                            delta=ChoiceDelta(
-                                role="assistant",
-                                content=f"TEXT_ONLY:{text_part}"
-                            )
-                        )
-                    raise StopAsyncIteration
-            # Fallback: no pattern, just yield once
+            # First chunk: voice only
             if not getattr(self, '_voice_sent', False):
+                voice = await self._response_future  # returns voice only
                 self._voice_sent = True
-                self._text_sent = True
                 return ChatChunk(
-                    id="diagnostic_response",
+                    id="diagnostic_voice",
                     delta=ChoiceDelta(
                         role="assistant",
-                        content=full_response
+                        content=voice
                     )
                 )
+            # Second chunk: diagnostic text payload (if exists)
+            if getattr(self, '_voice_sent', False) and not getattr(self, '_text_sent', False):
+                self._text_sent = True
+                
+                # Check for text payload stored in agent during _process_message
+                text_payload = getattr(self._agent, '_diagnostic_text_payload', None)
+                if not text_payload:
+                    # Fallback to text payload stored directly in stream
+                    text_payload = getattr(self, '_text_payload', None)
+                
+                if text_payload:
+                    logger.info(f"📤 Emitting TEXT_ONLY chunk: {len(text_payload)} chars")
+                    return ChatChunk(
+                        id="diagnostic_text",
+                        delta=ChoiceDelta(
+                            role="assistant",
+                            content=f"TEXT_ONLY:{text_payload}"
+                        )
+                    )
+                # No text payload, stop
+                raise StopAsyncIteration
             raise StopAsyncIteration
         except Exception as e:
             logger.exception("Error in DiagnosticLLMStream.__anext__")
@@ -976,7 +969,11 @@ class DiagnosticLLMStream(LLMStream):
             )
 
     async def _get_response(self) -> str:
-        """Get the response from the diagnostic agent and handle structured format."""
+        """Get the response from the diagnostic agent and handle structured format.
+        
+        Returns ONLY voice_output string. Stores text_output separately for second chunk.
+        TTS will only receive the returned voice string from the first chunk.
+        """
         try:
             response = await self._agent.chat(self._message)
             
@@ -1041,11 +1038,13 @@ class DiagnosticLLMStream(LLMStream):
                                     c = _re.sub(r'https?://youtu\.be/[A-Za-z0-9_-]+', '', c)
                                 text_output['content'] = c.strip()
                         
-                        # Format the response for LiveKit using the VOICE|||TEXT pattern
-                        formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
-                        logger.info(f"📡 Sending structured response to LiveKit: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                        # Store text payload internally for second chunk
+                        self._text_payload = json.dumps(text_output)
+                        self._has_text_payload = True
+                        logger.info(f"📡 Prepared structured response: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
                         
-                        return formatted_response
+                        # Return ONLY voice for TTS (first chunk)
+                        return voice_output
                 
                 # Check for direct structured format (legacy)
                 elif (isinstance(parsed_response, dict) and 
@@ -1056,23 +1055,28 @@ class DiagnosticLLMStream(LLMStream):
                     voice_output = parsed_response.get('voice_output', '')
                     text_output = parsed_response.get('text_output', {})
                     
-                    # Format the response for LiveKit using the VOICE|||TEXT pattern
-                    formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
-                    logger.info(f"📡 Sending structured response to LiveKit: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                    # Store text payload for second chunk
+                    self._text_payload = json.dumps(text_output)
+                    self._has_text_payload = True
+                    logger.info(f"📡 Prepared legacy structured response: voice_len={len(voice_output)}, text_payload_len={len(self._text_payload)}")
                     
-                    return formatted_response
+                    # Return ONLY voice for TTS
+                    return voice_output
                 else:
-                    # Not a recognized structured response, return as-is
+                    # Not a recognized structured response, return as-is (will be treated as voice only)
                     logger.info("📝 Received plain text response from diagnostic agent")
+                    self._has_text_payload = False
                     return response
                     
             except (json.JSONDecodeError, TypeError):
                 # Not JSON, return as-is
                 logger.info("📝 Received non-JSON response from diagnostic agent")
+                self._has_text_payload = False
                 return response
                 
         except Exception as e:
             logger.exception("Error getting response from diagnostic agent")
+            self._has_text_payload = False
             return f"I apologize, but I encountered an error processing your request: {e}"
 
     async def aclose(self):
