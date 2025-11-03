@@ -681,6 +681,9 @@ def format_diagnostic_results(
             # Find first https://...youtube link
             url_match = re.search(r'https?://(?:www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]+', raw_url) or \
                         re.search(r'https?://youtu\.be/[a-zA-Z0-9_-]+', raw_url)
+            if not url_match:
+                # Skip non-YouTube entries entirely to prevent polluting list with fallbacks
+                continue
             clean_url = url_match.group(0) if url_match else raw_url.strip()
             video_id = extract_youtube_video_id(clean_url)
 
@@ -700,6 +703,32 @@ def format_diagnostic_results(
                 "thumbnail": thumbnail_url,
                 "video_id": video_id
             })
+
+    # Final safety pass: ensure each video dict has ONLY expected keys & valid URL
+    cleaned_list = []
+    for v in structured_youtube_videos:
+        if not isinstance(v, dict):
+            continue
+        url = v.get("url", "")
+        match = re.search(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[a-zA-Z0-9_-]+|youtu\.be/[a-zA-Z0-9_-]+)', url)
+        if not match:
+            # Attempt extraction from polluted string
+            extracted = re.search(r'(https?://[^\s"<>]+youtube[^\s"<>]+)', url)
+            if extracted:
+                url = extracted.group(1)
+            else:
+                continue  # skip invalid entry entirely
+        video_id = extract_youtube_video_id(url)
+        thumb = v.get("thumbnail") or f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+        if 'default/default.jpg' in thumb:
+            thumb = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
+        cleaned_list.append({
+            "url": url,
+            "title": v.get("title", "Diagnostic Video"),
+            "thumbnail": thumb,
+            "video_id": video_id
+        })
+    structured_youtube_videos = cleaned_list
     
     # If RAG has good info AND good relevance score, process it for steps/images/tables
     if use_rag:
@@ -991,6 +1020,8 @@ def clean_html_artifacts(content: str) -> str:
     
     # Remove empty quotes and brackets
     content = re.sub(r'[""'']+\s*[""'']+', '', content)
+    # Additional pattern to avoid invalid escape sequence warnings
+    content = re.sub(r'["\']+\s*["\']+', '', content)
     content = re.sub(r'\[\s*\]', '', content)
     content = re.sub(r'\{\s*\}', '', content)
     

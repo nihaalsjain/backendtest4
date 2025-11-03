@@ -33,6 +33,9 @@ def speak(text: str):
     except Exception as e:
         logger.error(f"TTS engine error: {e}")
 
+# NOTE: Ensure upstream caller passes the full raw agent message (with VOICE|||TEXT) into speak().
+# If caller currently sends combined diagnostic text, wrap it: speak(f"VOICE:{voice_part}|||TEXT:{text_part}")
+
 def listen_for_command() -> str:
     """Listens for a command from the microphone and returns it as text."""
     r = sr.Recognizer()
