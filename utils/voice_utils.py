@@ -24,6 +24,16 @@ def extract_voice_segment(raw: str) -> str:
 def speak(text: str):
     """Converts text to speech and plays ONLY the voice summary (sanitized)."""
     try:
+        pattern_match = re.match(r'^VOICE:([\s\S]*?)\|\|\|TEXT:', text or '')
+        if not pattern_match:
+            # Hard guard: do NOT speak full diagnostic content accidentally.
+            logger.warning("TTS invoked without VOICE|||TEXT pattern – aborting full report speech. Provide combined pattern. Returning fallback line.")
+            fallback = "I have an update. Check the diagnostic report for detailed steps."
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 180)
+            engine.say(fallback)
+            engine.runAndWait()
+            return
         voice_only = extract_voice_segment(text)
         engine = pyttsx3.init()
         engine.setProperty("rate", 180)

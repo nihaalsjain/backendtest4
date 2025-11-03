@@ -4,6 +4,7 @@ Improved diagnostic workflow with DTC code normalization + language control + co
 
 import logging
 import asyncio
+import re
 import json
 import re
 import os
@@ -907,26 +908,65 @@ class DiagnosticLLMStream(LLMStream):
 
     async def __anext__(self) -> ChatChunk:
         """Get the next chunk from the stream."""
-        if self._response_sent:
+        # If we already sent both parts, stop.
+        if getattr(self, '_voice_sent', False) and getattr(self, '_text_sent', False):
             raise StopAsyncIteration
             
         if self._response_future is None:
             self._response_future = asyncio.create_task(self._get_response())
         
         try:
-            response_text = await self._response_future
-            chunk = ChatChunk(
-                id="diagnostic_response",
-                delta=ChoiceDelta(
-                    role="assistant",
-                    content=response_text
+            # Await the full combined response (may contain VOICE|||TEXT pattern)
+            if not getattr(self, '_response_buffer', None):
+                full = await self._response_future
+                self._response_buffer = full
+
+            full_response = self._response_buffer
+
+            # Pattern split: VOICE:...|||TEXT:{json}
+            if isinstance(full_response, str):
+                m = re.match(r'^VOICE:([\s\S]*?)\|\|\|TEXT:([\s\S]+)$', full_response)
+                if m:
+                    voice_part = m.group(1).strip()
+                    text_part = m.group(2).strip()
+                    # First yield voice only (for TTS)
+                    if not getattr(self, '_voice_sent', False):
+                        self._voice_sent = True
+                        return ChatChunk(
+                            id="diagnostic_voice",
+                            delta=ChoiceDelta(
+                                role="assistant",
+                                content=voice_part  # ONLY voice summary
+                            )
+                        )
+                    # Then yield diagnostic JSON separately, prefixed so TTS systems can ignore
+                    if not getattr(self, '_text_sent', False):
+                        self._text_sent = True
+                        # Wrap in TEXT_ONLY: prefix
+                        return ChatChunk(
+                            id="diagnostic_text",
+                            delta=ChoiceDelta(
+                                role="assistant",
+                                content=f"TEXT_ONLY:{text_part}"
+                            )
+                        )
+                    raise StopAsyncIteration
+            # Fallback: no pattern, just yield once
+            if not getattr(self, '_voice_sent', False):
+                self._voice_sent = True
+                self._text_sent = True
+                return ChatChunk(
+                    id="diagnostic_response",
+                    delta=ChoiceDelta(
+                        role="assistant",
+                        content=full_response
+                    )
                 )
-            )
-            self._response_sent = True
-            return chunk
+            raise StopAsyncIteration
         except Exception as e:
             logger.exception("Error in DiagnosticLLMStream.__anext__")
-            self._response_sent = True
+            self._voice_sent = True
+            self._text_sent = True
             return ChatChunk(
                 id="diagnostic_error",
                 delta=ChoiceDelta(
@@ -956,6 +996,50 @@ class DiagnosticLLMStream(LLMStream):
                         
                         voice_output = formatted_data.get('voice_output', '')
                         text_output = formatted_data.get('text_output', {})
+
+                        # Defensive sanitization right before serialization to prevent TTS pollution.
+                        if isinstance(text_output, dict):
+                            # Ensure expected keys only
+                            allowed_keys = {"content", "web_sources", "youtube_videos", "has_external_sources"}
+                            for k in list(text_output.keys()):
+                                if k not in allowed_keys:
+                                    text_output.pop(k, None)
+                            # Strip any embedded HTML blobs inside youtube_videos entries
+                            vids = text_output.get('youtube_videos', []) or []
+                            cleaned_vids = []
+                            import re as _re
+                            for v in vids:
+                                if not isinstance(v, dict):
+                                    continue
+                                raw_url = v.get('url', '')
+                                # Extract first clean YouTube URL
+                                m = _re.search(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[A-Za-z0-9_-]+|youtu\.be/[A-Za-z0-9_-]+)', raw_url or '')
+                                if not m:
+                                    continue
+                                clean_url = m.group(0)
+                                video_id = m.group(0).split('v=')[-1].split('/')[-1]
+                                title = v.get('title', 'Diagnostic Video')
+                                # Remove tags from title
+                                title = _re.sub(r'<[^>]+>', '', title).strip()
+                                thumb = v.get('thumbnail') or f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
+                                if 'default/default.jpg' in thumb:
+                                    thumb = f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
+                                cleaned_vids.append({
+                                    'url': clean_url,
+                                    'title': title,
+                                    'thumbnail': thumb,
+                                    'video_id': video_id
+                                })
+                            text_output['youtube_videos'] = cleaned_vids
+                            # Ensure content has no inline full video blocks
+                            if 'content' in text_output and isinstance(text_output['content'], str):
+                                c = text_output['content']
+                                c = _re.sub(r'🎥 Watch Diagnostic Video', '', c)
+                                # Remove any raw youtube watch URLs if structured vids exist
+                                if cleaned_vids:
+                                    c = _re.sub(r'https?://(?:www\.)?youtube\.com/watch\?v=[A-Za-z0-9_-]+', '', c)
+                                    c = _re.sub(r'https?://youtu\.be/[A-Za-z0-9_-]+', '', c)
+                                text_output['content'] = c.strip()
                         
                         # Format the response for LiveKit using the VOICE|||TEXT pattern
                         formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
