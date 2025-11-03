@@ -433,7 +433,14 @@ STEP 7: Based on relevance score:
 STEP 8: ALWAYS call format_diagnostic_results 
 - IMPORTANT: Always include web_results and youtube_results if they were obtained in previous steps
 - Pass ALL available data: question, rag_answer, web_results, youtube_results, dtc_code, relevance_score
-- This creates your final response with all available information
+- This creates your final response with ALL information (both voice_output and text_output)
+
+🎯 CRITICAL VOICE/TEXT SEPARATION (For System Architecture):
+- format_diagnostic_results returns BOTH voice_output (concise) and text_output (detailed)
+- The system AUTOMATICALLY handles separation:
+  * voice_output → sent to TTS via LLM stream (for speaking)
+  * text_output → stored at agent level for separate frontend retrieval (for diagnostic panel)
+- Your format_diagnostic_results tool output is split automatically; you create complete structured response
 
 🚫 FORBIDDEN BEHAVIORS:
 - Do NOT answer questions directly without using tools
@@ -449,6 +456,7 @@ STEP 8: ALWAYS call format_diagnostic_results
 - Always include ALL available web sources and YouTube videos in the final formatting
 
 REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowledge comes ONLY from the tools.
+ The system architecture ensures voice and text are separated after your response is generated.
 """)
             
             messages = [system_msg] + state.get("messages", [])
@@ -832,7 +840,7 @@ from typing import Any
 class DiagnosticLLMAdapter(LLM):
     """
     Adapter that implements LiveKit LLM interface using async agent internally,
-    with enforced target language.
+    with enforced target language and WebSocket support for diagnostic text delivery.
     """
     def __init__(self, target_language: str = "en"):
         super().__init__()
@@ -841,6 +849,58 @@ class DiagnosticLLMAdapter(LLM):
         self.target_language = (target_language or "en").lower()
         if self.target_language not in {"en", "hi", "kn"}:
             self.target_language = "en"
+        
+        # WebSocket reference for sending diagnostic text
+        self._websocket = None
+        self._ws_ready = asyncio.Event()
+
+    def set_websocket(self, websocket) -> None:
+        """
+        Set the WebSocket connection for sending diagnostic text.
+        Called by LiveKit worker when connection is established.
+        
+        Args:
+            websocket: The WebSocket connection object
+        """
+        self._websocket = websocket
+        self._ws_ready.set()
+        logger.info("✅ WebSocket connection set for diagnostic text delivery")
+
+    async def send_diagnostic_text_via_websocket(self, text_payload: str) -> bool:
+        """
+        Send diagnostic text payload through WebSocket to frontend.
+        
+        Args:
+            text_payload: JSON string containing diagnostic text
+            
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        if not self._websocket:
+            logger.warning("⚠️ WebSocket not available for diagnostic text delivery")
+            return False
+        
+        try:
+            # Wait a bit for WebSocket to be fully ready
+            await asyncio.wait_for(self._ws_ready.wait(), timeout=1.0)
+            
+            message = json.dumps({
+                "type": "diagnostic:text",
+                "payload": text_payload,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Send via WebSocket
+            await self._websocket.send(message)
+            logger.info(f"📤 Diagnostic text sent via WebSocket: {len(text_payload)} chars")
+            return True
+            
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ WebSocket not ready in time for diagnostic text delivery")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Failed to send diagnostic text via WebSocket: {e}")
+            return False
 
     def _ensure_agent(self):
         """Ensure agent is created in the current event loop."""
@@ -887,6 +947,19 @@ class DiagnosticLLMAdapter(LLM):
             conn_options=conn_options or DEFAULT_API_CONNECT_OPTIONS,
         )
 
+    def get_diagnostic_text_payload(self) -> Optional[str]:
+        """
+        Retrieve the diagnostic text payload stored in agent.
+        Frontend calls this SEPARATELY (not via LLM stream) to get diagnostic report.
+        This ensures text never goes to TTS.
+        """
+        if self._agent:
+            payload = getattr(self._agent, '_diagnostic_text_payload', None)
+            if payload:
+                logger.info(f"📋 Frontend retrieving diagnostic text: {len(payload)} chars")
+            return payload
+        return None
+
     async def aclose(self):
         """Clean up resources."""
         if self._agent:
@@ -912,54 +985,37 @@ class DiagnosticLLMStream(LLMStream):
     async def __anext__(self) -> ChatChunk:
         """Get the next chunk from the stream.
         
-        First chunk: voice only (safe for TTS)
-        Second chunk: TEXT_ONLY prefixed diagnostic JSON (for frontend panel)
+        CRITICAL: Only emit voice chunk for TTS consumption.
+        Text payload is stored at agent level and sent via separate frontend channel.
+        
+        This prevents TTS from reading diagnostic JSON.
         """
-        # If both parts sent, stop.
-        if getattr(self, '_voice_sent', False) and getattr(self, '_text_sent', False):
+        # Only emit voice once
+        if getattr(self, '_voice_sent', False):
             raise StopAsyncIteration
 
         if self._response_future is None:
             self._response_future = asyncio.create_task(self._get_response())
 
         try:
-            # First chunk: voice only
-            if not getattr(self, '_voice_sent', False):
-                voice = await self._response_future  # returns voice only
-                self._voice_sent = True
-                return ChatChunk(
-                    id="diagnostic_voice",
-                    delta=ChoiceDelta(
-                        role="assistant",
-                        content=voice
-                    )
+            # ONLY chunk: voice summary (safe for TTS)
+            # Text is handled separately at frontend level via agent state
+            voice = await self._response_future  # returns voice only
+            self._voice_sent = True
+            logger.info(f"📤 Emitting voice chunk to TTS: {len(voice)} chars")
+            return ChatChunk(
+                id="diagnostic_voice",
+                delta=ChoiceDelta(
+                    role="assistant",
+                    content=voice
                 )
-            # Second chunk: diagnostic text payload (if exists)
-            if getattr(self, '_voice_sent', False) and not getattr(self, '_text_sent', False):
-                self._text_sent = True
-                
-                # Check for text payload stored in agent during _process_message
-                text_payload = getattr(self._agent, '_diagnostic_text_payload', None)
-                if not text_payload:
-                    # Fallback to text payload stored directly in stream
-                    text_payload = getattr(self, '_text_payload', None)
-                
-                if text_payload:
-                    logger.info(f"📤 Emitting TEXT_ONLY chunk: {len(text_payload)} chars")
-                    return ChatChunk(
-                        id="diagnostic_text",
-                        delta=ChoiceDelta(
-                            role="assistant",
-                            content=f"TEXT_ONLY:{text_payload}"
-                        )
-                    )
-                # No text payload, stop
-                raise StopAsyncIteration
-            raise StopAsyncIteration
+            )
+        except StopAsyncIteration:
+            # Re-raise StopAsyncIteration without logging - it's normal control flow
+            raise
         except Exception as e:
             logger.exception("Error in DiagnosticLLMStream.__anext__")
             self._voice_sent = True
-            self._text_sent = True
             return ChatChunk(
                 id="diagnostic_error",
                 delta=ChoiceDelta(
@@ -1038,10 +1094,15 @@ class DiagnosticLLMStream(LLMStream):
                                     c = _re.sub(r'https?://youtu\.be/[A-Za-z0-9_-]+', '', c)
                                 text_output['content'] = c.strip()
                         
-                        # Store text payload internally for second chunk
-                        self._text_payload = json.dumps(text_output)
+                        # Store text payload in agent for fallback retrieval
+                        text_payload_json = json.dumps(text_output)
+                        self._agent._diagnostic_text_payload = text_payload_json
+                        self._text_payload = text_payload_json
                         self._has_text_payload = True
                         logger.info(f"📡 Prepared structured response: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                        
+                        # Send diagnostic text via WebSocket to frontend (primary method)
+                        asyncio.create_task(self._llm.send_diagnostic_text_via_websocket(text_payload_json))
                         
                         # Return ONLY voice for TTS (first chunk)
                         return voice_output
@@ -1055,10 +1116,15 @@ class DiagnosticLLMStream(LLMStream):
                     voice_output = parsed_response.get('voice_output', '')
                     text_output = parsed_response.get('text_output', {})
                     
-                    # Store text payload for second chunk
-                    self._text_payload = json.dumps(text_output)
+                    # Store text payload in agent and locally for fallback
+                    text_payload_json = json.dumps(text_output)
+                    self._agent._diagnostic_text_payload = text_payload_json
+                    self._text_payload = text_payload_json
                     self._has_text_payload = True
-                    logger.info(f"📡 Prepared legacy structured response: voice_len={len(voice_output)}, text_payload_len={len(self._text_payload)}")
+                    logger.info(f"📡 Prepared legacy structured response: voice_len={len(voice_output)}, text_payload_len={len(text_payload_json)}")
+                    
+                    # Send diagnostic text via WebSocket to frontend
+                    asyncio.create_task(self._llm.send_diagnostic_text_via_websocket(text_payload_json))
                     
                     # Return ONLY voice for TTS
                     return voice_output
