@@ -684,20 +684,42 @@ def format_diagnostic_results(
         logger.info("Using RAG answer with step/image/table formatting")
         processed_rag_content = process_content_with_inline_images(rag_content)
         
-        # Remove YouTube URLs from content since we have them in structured format
+        # Remove YouTube URLs and ANY HTML artifacts from content since we have structured format
         if structured_youtube_videos:
             for video in structured_youtube_videos:
                 video_url = video["url"]
+                video_id = video.get("video_id", "")
+                
                 # Remove the URL from the main content (handle various line formats)
                 processed_rag_content = processed_rag_content.replace(video_url, "")
                 # Also remove common patterns like "- {url}" or "• {url}"
                 processed_rag_content = re.sub(rf'^[•\-\*]\s*{re.escape(video_url)}\s*$', '', processed_rag_content, flags=re.MULTILINE)
+                
+                # Remove any HTML blocks that contain this video ID or URL
+                if video_id:
+                    # Remove HTML img tags with this video ID
+                    processed_rag_content = re.sub(rf'<img[^>]*{re.escape(video_id)}[^>]*>', '', processed_rag_content, flags=re.IGNORECASE)
+                    # Remove entire HTML blocks containing this video
+                    processed_rag_content = re.sub(rf'<[^>]*{re.escape(video_id)}[^>]*>.*?</[^>]*>', '', processed_rag_content, flags=re.IGNORECASE | re.DOTALL)
+                
+                # Remove any remaining HTML/thumbnail artifacts
+                processed_rag_content = re.sub(r'<[^>]*youtube[^>]*>.*?</[^>]*>', '', processed_rag_content, flags=re.IGNORECASE | re.DOTALL)
+                processed_rag_content = re.sub(r'"[^"]*target="_blank"[^"]*"', '', processed_rag_content)
+                processed_rag_content = re.sub(r'"[^"]*noopener noreferrer[^"]*"', '', processed_rag_content)
+                processed_rag_content = re.sub(r'🎥 Watch Diagnostic Video', '', processed_rag_content)
+                
                 # Clean up empty lines
                 processed_rag_content = re.sub(r'\n\s*\n\s*\n', '\n\n', processed_rag_content)
             processed_rag_content = processed_rag_content.strip()
         
         # Clean any HTML artifacts and decode Unicode escape sequences
         processed_rag_content = clean_html_artifacts(processed_rag_content)
+        
+        # Additional safety: Remove any remaining structured data artifacts
+        processed_rag_content = re.sub(r'"[^"]*":\s*"[^"]*"', '', processed_rag_content)
+        processed_rag_content = re.sub(r'\{[^}]*\}', '', processed_rag_content)
+        processed_rag_content = re.sub(r'\[[^\]]*\]', '', processed_rag_content)
+        
         voice_summary = create_voice_summary(processed_rag_content, question)
         
         return {
@@ -748,8 +770,12 @@ Create a comprehensive diagnostic report that STRICTLY follows this EXACT format
 • [solution 2]
 • [continue until you have up to 3 solutions, be specific and technical]
 
-Your response MUST follow this format exactly, with these exact section headings.
-Be concise and technical in your bullet points. Do not add any other sections or explanations.
+CRITICAL REQUIREMENTS:
+- Use ONLY plain text and bullet points (•)
+- NO HTML tags, NO images, NO links in the response
+- NO video URLs or thumbnails in the text
+- Follow the exact format with these section headings
+- Be concise and technical in your bullet points
 """
         else:
             prompt_template = f"""
@@ -762,29 +788,55 @@ RAG ANSWER: {rag_answer}
 WEB SEARCH RESULTS: 
 {web_content}
 
-Provide a detailed, helpful response that synthesizes all this information.
-If the RAG answer indicates "No relevant information found in the PDF", prioritize the web search results.
-Format your response with clear sections and bullet points for better readability.
+CRITICAL REQUIREMENTS:
+- Provide a detailed, helpful response using ONLY plain text
+- NO HTML tags, NO images, NO links in the response
+- NO video URLs or thumbnails in the text
+- Use bullet points (•) for lists when appropriate
+- Format your response with clear sections and bullet points for better readability
+- If the RAG answer indicates "No relevant information found in the PDF", prioritize the web search results
 """
         
         try:
             response = llm.invoke(prompt_template)
             diagnostic_content = response.content.strip()
             
-            # Remove YouTube URLs from content since we have them in structured format
+            # Remove YouTube URLs and ANY HTML artifacts from content since we have structured format
             if structured_youtube_videos:
                 for video in structured_youtube_videos:
                     video_url = video["url"]
+                    video_id = video.get("video_id", "")
+                    
                     # Remove the URL from the main content (handle various line formats)
                     diagnostic_content = diagnostic_content.replace(video_url, "")
                     # Also remove common patterns like "- {url}" or "• {url}"
                     diagnostic_content = re.sub(rf'^[•\-\*]\s*{re.escape(video_url)}\s*$', '', diagnostic_content, flags=re.MULTILINE)
+                    
+                    # Remove any HTML blocks that contain this video ID or URL
+                    if video_id:
+                        # Remove HTML img tags with this video ID
+                        diagnostic_content = re.sub(rf'<img[^>]*{re.escape(video_id)}[^>]*>', '', diagnostic_content, flags=re.IGNORECASE)
+                        # Remove entire HTML blocks containing this video
+                        diagnostic_content = re.sub(rf'<[^>]*{re.escape(video_id)}[^>]*>.*?</[^>]*>', '', diagnostic_content, flags=re.IGNORECASE | re.DOTALL)
+                    
+                    # Remove any remaining HTML/thumbnail artifacts
+                    diagnostic_content = re.sub(r'<[^>]*youtube[^>]*>.*?</[^>]*>', '', diagnostic_content, flags=re.IGNORECASE | re.DOTALL)
+                    diagnostic_content = re.sub(r'"[^"]*target="_blank"[^"]*"', '', diagnostic_content)
+                    diagnostic_content = re.sub(r'"[^"]*noopener noreferrer[^"]*"', '', diagnostic_content)
+                    diagnostic_content = re.sub(r'🎥 Watch Diagnostic Video', '', diagnostic_content)
+                    
                     # Clean up empty lines
                     diagnostic_content = re.sub(r'\n\s*\n\s*\n', '\n\n', diagnostic_content)
                 diagnostic_content = diagnostic_content.strip()
             
             # Clean any HTML artifacts and decode Unicode escape sequences
             diagnostic_content = clean_html_artifacts(diagnostic_content)
+            
+            # Additional safety: Remove any remaining structured data artifacts
+            diagnostic_content = re.sub(r'"[^"]*":\s*"[^"]*"', '', diagnostic_content)
+            diagnostic_content = re.sub(r'\{[^}]*\}', '', diagnostic_content)
+            diagnostic_content = re.sub(r'\[[^\]]*\]', '', diagnostic_content)
+            
             voice_summary = create_voice_summary(diagnostic_content, question)
             
             logger.info("Generated structured diagnostic report from web sources")
@@ -884,10 +936,26 @@ def process_content_with_inline_images(content: str) -> str:
 
 def clean_html_artifacts(content: str) -> str:
     """Remove HTML artifacts and properly decode Unicode escape sequences."""
-    # Remove HTML tags
-    content = re.sub(r'<[^>]+>', '', content)
+    # Remove ALL HTML tags and content
+    content = re.sub(r'<[^>]+>', '', content, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Remove HTML attributes that might remain
+    content = re.sub(r'\s*target="_blank"[^"]*"[^"]*"', '', content)
+    content = re.sub(r'\s*rel="[^"]*"', '', content)
+    content = re.sub(r'\s*class="[^"]*"', '', content)
+    content = re.sub(r'\s*alt="[^"]*"', '', content)
+    content = re.sub(r'\s*onerror="[^"]*"', '', content)
+    
     # Remove escaped quotes and other HTML entities
     content = content.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+    
+    # Remove YouTube-specific artifacts
+    content = re.sub(r'🎥\s*Watch\s*Diagnostic\s*Video', '', content, flags=re.IGNORECASE)
+    content = re.sub(r'YouTube\s*Thumbnail', '', content, flags=re.IGNORECASE)
+    
+    # Remove any remaining JSON-like artifacts
+    content = re.sub(r'",\s*"[^"]*":\s*"', '', content)
+    content = re.sub(r'}\s*,\s*\{', '', content)
     
     # Decode common Unicode escape sequences
     content = content.replace('\\u2022', '•')  # bullet point
@@ -903,6 +971,11 @@ def clean_html_artifacts(content: str) -> str:
     # Clean up multiple spaces and newlines but preserve paragraph structure
     content = re.sub(r' +', ' ', content)  # Multiple spaces to single space
     content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)  # Multiple newlines to double newline
+    
+    # Remove empty quotes and brackets
+    content = re.sub(r'[""'']+\s*[""'']+', '', content)
+    content = re.sub(r'\[\s*\]', '', content)
+    content = re.sub(r'\{\s*\}', '', content)
     
     return content.strip()
 
@@ -928,49 +1001,55 @@ def extract_youtube_video_id(url: str) -> str:
 
 
 def create_voice_summary(diagnostic_content: str, question: str) -> str:
-    """Create a concise voice summary from detailed diagnostic content."""
+    """Create a concise voice summary from detailed diagnostic content for TTS."""
     try:
-        # Create a concise summary for voice output (3-4 sentences max)
+        # Clean the content first to remove any remaining artifacts
+        clean_content = clean_html_artifacts(diagnostic_content)
+        
+        # Create a very concise summary for voice output (2-3 sentences max)
         summary_prompt = f"""
-Based on this detailed diagnostic information:
+Create a SHORT voice summary for TTS from this diagnostic information:
 
-{diagnostic_content[:800]}...
+{clean_content[:600]}
 
-Create a concise voice summary that answers the user's question: "{question}"
+User question: "{question}"
 
-Requirements:
-- Maximum 3-4 sentences
-- Focus on the most critical findings and immediate actions
-- Use conversational tone suitable for speech
-- Mention key diagnostic points but avoid lengthy explanations
-- Under 80 words total
+CRITICAL Requirements:
+- MAXIMUM 2-3 sentences only
+- MAXIMUM 50 words total
+- Use simple, conversational language for speech
+- Focus ONLY on the main finding and primary recommendation
+- NO technical jargon, NO detailed steps, NO bullet points
+- End with "Check the diagnostic report for detailed steps"
 
-Example format: "The [code] indicates [main issue]. The primary causes are [brief list]. I recommend [key action]. Check the diagnostic panel for detailed steps and resources."
+Example: "The P0401 code indicates insufficient EGR flow. This is commonly caused by a clogged EGR valve. Check the diagnostic report for detailed steps."
 """
         
         response = llm.invoke(summary_prompt)
         voice_summary = response.content.strip()
         
-        # Ensure it's not too long for TTS
-        if len(voice_summary) > 300:
-            # Truncate to first 3 sentences if too long
+        # Ensure it's very concise for TTS
+        if len(voice_summary) > 200:
+            # Truncate to first 2 sentences if too long
             sentences = voice_summary.split('.')
-            voice_summary = '. '.join(sentences[:3]) + '.'
+            voice_summary = '. '.join(sentences[:2]) + '. Check the diagnostic report for detailed information.'
         
-        # Fallback to first paragraph if LLM fails
-        if not voice_summary or len(voice_summary) < 20:
-            lines = diagnostic_content.split('\n')
-            for line in lines:
-                if line.strip() and len(line.strip()) > 30:
-                    # Create a simple summary from the content
-                    return f"I found diagnostic information for your question. {line.strip()[:150]}... Check the diagnostic panel for complete details."
+        # Remove any remaining formatting or special characters
+        voice_summary = re.sub(r'[•\-\*]', '', voice_summary)
+        voice_summary = re.sub(r'\n+', ' ', voice_summary)
+        voice_summary = re.sub(r'\s+', ' ', voice_summary).strip()
         
+        # Ensure it ends properly
+        if not voice_summary.endswith('.'):
+            voice_summary += '.'
+        
+        logger.info(f"📢 Created voice summary: {len(voice_summary)} chars")
         return voice_summary
         
     except Exception as e:
         logger.error(f"Error creating voice summary: {e}")
-        # Simple fallback
-        return f"I found diagnostic information for your {question}. Please check the detailed report in the diagnostic panel for complete analysis, steps, and resources."
+        # Very simple fallback for TTS
+        return f"I found diagnostic information for your question. Check the diagnostic report for complete details."
 
 # Export all tools
 __all__ = [
