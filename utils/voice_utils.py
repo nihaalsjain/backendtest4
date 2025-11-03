@@ -1,16 +1,34 @@
 import logging
+import re
 import speech_recognition as sr
 import pyttsx3
 
 logger = logging.getLogger(__name__)
 
+def extract_voice_segment(raw: str) -> str:
+    """Extract only the VOICE portion from a combined VOICE|||TEXT message.
+
+    Falls back to raw string if pattern not found.
+    """
+    if not isinstance(raw, str):
+        raw = str(raw)
+    match = re.match(r'^VOICE:([\s\S]*?)\|\|\|TEXT:', raw)
+    if match:
+        # Clean whitespace/newlines
+        voice_part = match.group(1).strip()
+        # Remove any accidental embedded JSON braces
+        voice_part = re.sub(r'[{}\[\]]', '', voice_part)
+        return re.sub(r'\s{2,}', ' ', voice_part)
+    return raw.strip()
+
 def speak(text: str):
-    """Converts text to speech and plays it."""
+    """Converts text to speech and plays ONLY the voice summary (sanitized)."""
     try:
+        voice_only = extract_voice_segment(text)
         engine = pyttsx3.init()
         engine.setProperty("rate", 180)
-        logger.info(f"\n🤖 Assistant:\n{text}")
-        engine.say(text)
+        logger.info(f"\n🤖 Assistant (voice summary):\n{voice_only}")
+        engine.say(voice_only)
         engine.runAndWait()
     except Exception as e:
         logger.error(f"TTS engine error: {e}")

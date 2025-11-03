@@ -660,24 +660,46 @@ def format_diagnostic_results(
                     "title": result.get("title", "Web Source")
                 })
     
+    def _sanitize_str(val: Any) -> str:
+        if not isinstance(val, str):
+            val = str(val)
+        # Remove any embedded line breaks & stray HTML tags/attributes
+        val = re.sub(r'<[^>]+>', '', val)
+        val = val.replace('\n', ' ').replace('\r', ' ').strip()
+        # Collapse multiple spaces
+        val = re.sub(r'\s{2,}', ' ', val)
+        return val
+
     if youtube_results:
         for video in youtube_results[:4]:  # Limit to 4 YouTube videos
-            if "url" in video:
-                video_id = extract_youtube_video_id(video["url"])
-                
-                # Use the thumbnail from the video data, fallback to constructed URL
-                thumbnail_url = video.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg")
-                
-                # Ensure we don't use the default fallback image
-                if "default/default.jpg" in thumbnail_url:
-                    thumbnail_url = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
-                
-                structured_youtube_videos.append({
-                    "url": video["url"],
-                    "title": video.get("title", "Diagnostic Video"),
-                    "thumbnail": thumbnail_url,
-                    "video_id": video_id
-                })
+            if not isinstance(video, dict):
+                continue
+            raw_url = video.get("url", "")
+            if not raw_url:
+                continue
+            # Strip any HTML preceding the actual URL (seen in logs)
+            # Find first https://...youtube link
+            url_match = re.search(r'https?://(?:www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]+', raw_url) or \
+                        re.search(r'https?://youtu\.be/[a-zA-Z0-9_-]+', raw_url)
+            clean_url = url_match.group(0) if url_match else raw_url.strip()
+            video_id = extract_youtube_video_id(clean_url)
+
+            # Determine thumbnail candidate priority
+            thumb_candidates = [
+                video.get("thumbnail"),
+                video.get("thumbnail_hq"),
+                video.get("thumbnail_max"),
+                f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+            ]
+            thumbnail_url = next((t for t in thumb_candidates if t and isinstance(t, str) and 'default/default.jpg' not in t),
+                                  f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg")
+
+            structured_youtube_videos.append({
+                "url": clean_url,
+                "title": _sanitize_str(video.get("title", "Diagnostic Video")),
+                "thumbnail": thumbnail_url,
+                "video_id": video_id
+            })
     
     # If RAG has good info AND good relevance score, process it for steps/images/tables
     if use_rag:
@@ -712,16 +734,14 @@ def format_diagnostic_results(
                 processed_rag_content = re.sub(r'\n\s*\n\s*\n', '\n\n', processed_rag_content)
             processed_rag_content = processed_rag_content.strip()
         
-        # Clean any HTML artifacts and decode Unicode escape sequences
+        # Clean HTML artifacts only (avoid deleting legitimate colon lines)
         processed_rag_content = clean_html_artifacts(processed_rag_content)
-        
-        # Additional safety: Remove any remaining structured data artifacts
-        processed_rag_content = re.sub(r'"[^"]*":\s*"[^"]*"', '', processed_rag_content)
-        processed_rag_content = re.sub(r'\{[^}]*\}', '', processed_rag_content)
-        processed_rag_content = re.sub(r'\[[^\]]*\]', '', processed_rag_content)
-        
+        # Remove any residual embedded YouTube markup fragments
+        processed_rag_content = re.sub(r'https?://img.youtube.com/vi/default/default.jpg', '', processed_rag_content)
+        processed_rag_content = re.sub(r'\s{2,}', ' ', processed_rag_content)
+
         voice_summary = create_voice_summary(processed_rag_content, question)
-        
+
         return {
             "formatted_response": {
                 "voice_output": voice_summary,
@@ -829,13 +849,10 @@ CRITICAL REQUIREMENTS:
                     diagnostic_content = re.sub(r'\n\s*\n\s*\n', '\n\n', diagnostic_content)
                 diagnostic_content = diagnostic_content.strip()
             
-            # Clean any HTML artifacts and decode Unicode escape sequences
+            # Clean HTML artifacts only (avoid deleting legitimate colon lines)
             diagnostic_content = clean_html_artifacts(diagnostic_content)
-            
-            # Additional safety: Remove any remaining structured data artifacts
-            diagnostic_content = re.sub(r'"[^"]*":\s*"[^"]*"', '', diagnostic_content)
-            diagnostic_content = re.sub(r'\{[^}]*\}', '', diagnostic_content)
-            diagnostic_content = re.sub(r'\[[^\]]*\]', '', diagnostic_content)
+            diagnostic_content = re.sub(r'https?://img.youtube.com/vi/default/default.jpg', '', diagnostic_content)
+            diagnostic_content = re.sub(r'\s{2,}', ' ', diagnostic_content)
             
             voice_summary = create_voice_summary(diagnostic_content, question)
             
