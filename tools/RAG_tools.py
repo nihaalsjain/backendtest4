@@ -807,17 +807,17 @@ Create a comprehensive diagnostic report that STRICTLY follows this EXACT format
 **Potential Causes:**
 • [cause 1]
 • [cause 2]
-• [continue until you have up to 3 causes, be specific and technical]
+• [continue until you have up to 2 causes, be specific and technical]
 
 **Diagnostic Steps:**
 • [step 1]
 • [step 2]
-• [continue until you have up to 3 clear diagnostic steps]
+• [continue until you have up to 2 clear diagnostic steps]
 
 **Possible Solutions:**
 • [solution 1]
 • [solution 2]
-• [continue until you have up to 3 solutions, be specific and technical]
+• [continue until you have up to 2 solutions, be specific and technical]
 
 CRITICAL REQUIREMENTS:
 - Use ONLY plain text and bullet points (•)
