@@ -754,9 +754,56 @@ REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowled
                                 voice_output = formatted_response.get('voice_output', '')
                                 text_output = formatted_response.get('text_output', {})
                                 
+                                # Defensive sanitization to prevent TTS pollution
+                                if isinstance(text_output, dict):
+                                    import re as _re
+                                    
+                                    # Ensure expected keys only
+                                    allowed_keys = {"content", "web_sources", "youtube_videos", "has_external_sources"}
+                                    for k in list(text_output.keys()):
+                                        if k not in allowed_keys:
+                                            text_output.pop(k, None)
+                                    
+                                    # Strip any embedded HTML blobs inside youtube_videos entries
+                                    vids = text_output.get('youtube_videos', []) or []
+                                    cleaned_vids = []
+                                    for v in vids:
+                                        if not isinstance(v, dict):
+                                            continue
+                                        raw_url = v.get('url', '')
+                                        # Extract first clean YouTube URL
+                                        m = _re.search(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[A-Za-z0-9_-]+|youtu\.be/[A-Za-z0-9_-]+)', raw_url or '')
+                                        if not m:
+                                            continue
+                                        clean_url = m.group(0)
+                                        video_id = m.group(0).split('v=')[-1].split('/')[-1]
+                                        title = v.get('title', 'Diagnostic Video')
+                                        # Remove tags from title
+                                        title = _re.sub(r'<[^>]+>', '', title).strip()
+                                        thumb = v.get('thumbnail') or f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
+                                        if 'default/default.jpg' in thumb:
+                                            thumb = f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'
+                                        cleaned_vids.append({
+                                            'url': clean_url,
+                                            'title': title,
+                                            'thumbnail': thumb,
+                                            'video_id': video_id
+                                        })
+                                    text_output['youtube_videos'] = cleaned_vids
+                                    
+                                    # Ensure content has no inline full video blocks
+                                    if 'content' in text_output and isinstance(text_output['content'], str):
+                                        c = text_output['content']
+                                        c = _re.sub(r'🎥 Watch Diagnostic Video', '', c)
+                                        # Remove any raw youtube watch URLs if structured vids exist
+                                        if cleaned_vids:
+                                            c = _re.sub(r'https?://(?:www\.)?youtube\.com/watch\?v=[A-Za-z0-9_-]+', '', c)
+                                            c = _re.sub(r'https?://youtu\.be/[A-Za-z0-9_-]+', '', c)
+                                        text_output['content'] = c.strip()
+                                
                                 # Store text internally for LiveKit stream
                                 self._diagnostic_text_payload = json.dumps(text_output)
-                                logger.info(f"📊 Extracted text_output, stored internally. Voice: {len(voice_output)} chars, Text payload: {len(self._diagnostic_text_payload)} chars")
+                                logger.info(f"📊 Extracted text_output, stored internally (sanitized). Voice: {len(voice_output)} chars, Text payload: {len(self._diagnostic_text_payload)} chars")
                                 
                                 # Return ONLY voice_output for logging and LLM stream
                                 return voice_output
