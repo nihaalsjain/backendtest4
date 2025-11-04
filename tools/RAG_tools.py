@@ -804,16 +804,6 @@ Create a comprehensive diagnostic report that STRICTLY follows this EXACT format
 
 **Category:** [one-line description of what this DTC code represents]
 
-**Potential Causes:**
-• [cause 1]
-• [cause 2]
-• [continue until you have up to 2 causes, be specific and technical]
-
-**Diagnostic Steps:**
-• [step 1]
-• [step 2]
-• [continue until you have up to 2 clear diagnostic steps]
-
 **Possible Solutions:**
 • [solution 1]
 • [solution 2]
