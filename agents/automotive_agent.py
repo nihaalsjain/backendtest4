@@ -82,71 +82,6 @@ def get_simplified_config(lang_code: str, voice_base: str):
     return get_config_for_language(lang_code, voice_base)
 
 
-async def _configure_websocket_for_diagnostics(session, assistant, logger):
-    """
-    Configure WebSocket connection for diagnostic text delivery.
-    
-    This enables diagnostic text to flow via WebSocket from backend to frontend,
-    separate from the TTS audio stream.
-    
-    The WebSocket allows real-time delivery of diagnostic reports without
-    concatenating the text into the audio stream.
-    """
-    try:
-        # Initialize diagnostic agent if not already done
-        await assistant.initialize_diagnostic_agent()
-        
-        if assistant.diagnostic_agent is None:
-            logger.warning("⚠️ Diagnostic agent not initialized")
-            return False
-        
-        # Get the LLM adapter from the diagnostic agent
-        if not hasattr(assistant.diagnostic_agent, '_llm_adapter'):
-            logger.warning("⚠️ Diagnostic agent doesn't have LLM adapter yet")
-            return False
-        
-        llm_adapter = assistant.diagnostic_agent._llm_adapter
-        
-        # Check if adapter supports WebSocket (our new feature)
-        if not hasattr(llm_adapter, 'set_websocket'):
-            logger.warning("⚠️ LLM adapter doesn't support WebSocket method")
-            return False
-        
-        # Try to get WebSocket from session - try multiple paths
-        websocket = None
-        
-        # Method 1: Direct session._ws reference
-        if hasattr(session, '_ws'):
-            websocket = session._ws
-            logger.info("✅ WebSocket found via session._ws")
-        
-        # Method 2: Via session.engine._ws
-        elif hasattr(session, 'engine') and hasattr(session.engine, '_ws'):
-            websocket = session.engine._ws
-            logger.info("✅ WebSocket found via session.engine._ws")
-        
-        # Method 3: Via session.agent.engine._ws
-        elif hasattr(session.agent, 'engine') and hasattr(session.agent.engine, '_ws'):
-            websocket = session.agent.engine._ws
-            logger.info("✅ WebSocket found via session.agent.engine._ws")
-        
-        if websocket:
-            # Set the WebSocket reference in the LLM adapter
-            llm_adapter.set_websocket(websocket)
-            logger.info("✅ WebSocket configured for diagnostic text delivery")
-            logger.info("📡 Diagnostic text will now flow via WebSocket to frontend")
-            return True
-        else:
-            logger.warning("⚠️ Could not find WebSocket reference in session")
-            logger.info("ℹ️ Falling back: Diagnostic text will use HTTP getter method")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Error configuring WebSocket for diagnostics: {e}", exc_info=True)
-        logger.info("ℹ️ Falling back: Diagnostic text will use HTTP getter method")
-        return False
-
-
 async def entrypoint(ctx: agents.JobContext) -> None:
     """
     Improved entrypoint with proper async resource management.
@@ -214,18 +149,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             agent=assistant,
             room_input_options=RoomInputOptions(video_enabled=True),
         )
-        
-        # Configure WebSocket for diagnostic text delivery
-        # This enables real-time text delivery to frontend via WebSocket
-        ws_configured = await _configure_websocket_for_diagnostics(
-            session=session,
-            assistant=assistant,
-            logger=logger
-        )
-        if ws_configured:
-            logger.info("🎯 WebSocket integration ready - diagnostic text will flow to frontend")
-        else:
-            logger.info("📝 WebSocket configuration skipped - using HTTP fallback for diagnostic text")
         
         # Send initial greeting
         greeting = assistant.get_greeting(lang)
