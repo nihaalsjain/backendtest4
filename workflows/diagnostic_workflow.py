@@ -996,13 +996,21 @@ class DiagnosticLLMStream(LLMStream):
     async def _get_response(self) -> str:
         """Get the response from the diagnostic agent and handle structured format.
         
-        Returns ONLY voice_output string. Stores text_output separately for second chunk.
-        TTS will only receive the returned voice string from the first chunk.
+        Returns ONLY voice_output string. Checks agent for stored text_output.
+        TTS will only receive the returned voice string.
         """
         try:
             response = await self._agent.chat(self._message)
             
-            # Check if response is structured JSON
+            # Check if agent has stored diagnostic text payload (primary pattern)
+            if hasattr(self._agent, '_diagnostic_text_payload') and self._agent._diagnostic_text_payload:
+                # Agent has extracted and stored text separately
+                self._text_payload = self._agent._diagnostic_text_payload
+                self._has_text_payload = True
+                logger.info(f"📱 Retrieved diagnostic text from agent: {len(self._text_payload)} chars, voice: {len(response)} chars")
+                return response  # Return voice only
+            
+            # Fallback: Check if response is structured JSON (legacy format)
             try:
                 parsed_response = json.loads(response)
                 
