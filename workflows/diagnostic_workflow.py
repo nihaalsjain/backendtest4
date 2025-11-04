@@ -933,11 +933,11 @@ class DiagnosticLLMStream(LLMStream):
     async def __anext__(self) -> ChatChunk:
         """Get the next chunk from the stream.
         
-        Emits TWO chunks:
+        Emits TWO chunks for diagnostic queries:
         1. TEXT_ONLY chunk (filtered by frontend for diagnostic panel)
         2. Voice chunk (goes to TTS)
         
-        This keeps voice and text separate in the stream.
+        For non-diagnostic queries, emits only voice chunk.
         """
         # Track which chunk we're sending
         if not hasattr(self, '_chunk_index'):
@@ -947,13 +947,13 @@ class DiagnosticLLMStream(LLMStream):
             self._response_future = asyncio.create_task(self._get_response())
 
         try:
-            # Get the response (only once)
+            # Get the response (only once on first call)
             if self._chunk_index == 0:
                 self._response_data = await self._response_future
                 
-            # Check if we have text payload to send as first chunk
-            if self._chunk_index == 0 and hasattr(self._llm, '_has_text_payload') and self._llm._has_text_payload:
-                text_payload = self._llm._text_payload
+            # First chunk: TEXT_ONLY (only if we have diagnostic data)
+            if self._chunk_index == 0 and hasattr(self, '_has_text_payload') and self._has_text_payload:
+                text_payload = self._text_payload
                 self._chunk_index += 1
                 logger.info(f"📤 Emitting TEXT_ONLY chunk: {len(text_payload)} chars")
                 return ChatChunk(
@@ -964,9 +964,9 @@ class DiagnosticLLMStream(LLMStream):
                     )
                 )
             
-            # Second chunk: voice for TTS
-            elif self._chunk_index <= 1:
-                self._chunk_index += 1
+            # Second chunk (or first if no diagnostic data): voice for TTS
+            if self._chunk_index <= 1:
+                self._chunk_index = 99  # Mark as done after voice chunk
                 logger.info(f"📤 Emitting voice chunk to TTS: {len(self._response_data)} chars")
                 return ChatChunk(
                     id="diagnostic_voice",
@@ -975,9 +975,9 @@ class DiagnosticLLMStream(LLMStream):
                         content=self._response_data
                     )
                 )
-            else:
-                # No more chunks
-                raise StopAsyncIteration
+            
+            # No more chunks
+            raise StopAsyncIteration
 
         except StopAsyncIteration:
             # Re-raise StopAsyncIteration without logging - it's normal control flow
