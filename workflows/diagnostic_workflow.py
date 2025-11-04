@@ -780,7 +780,19 @@ REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowled
                                             logger.warning(f"❌ Video {idx} filtered: No YouTube URL match in '{raw_url[:100]}'")
                                             continue
                                         clean_url = m.group(0)
-                                        video_id = m.group(0).split('v=')[-1].split('/')[-1]
+                                        
+                                        # Extract video_id from URL (prioritize existing video_id field)
+                                        video_id = v.get('video_id', '')
+                                        if not video_id:
+                                            # Extract from URL if missing
+                                            id_match = _re.search(r'(?:v=|youtu\.be/)([A-Za-z0-9_-]+)', clean_url)
+                                            video_id = id_match.group(1) if id_match else ''
+                                            logger.info(f"📌 Video {idx}: Extracted video_id '{video_id}' from URL")
+                                        
+                                        if not video_id:
+                                            logger.warning(f"❌ Video {idx} filtered: No video_id found")
+                                            continue
+                                        
                                         title = v.get('title', 'Diagnostic Video')
                                         # Remove tags from title
                                         title = _re.sub(r'<[^>]+>', '', title).strip()

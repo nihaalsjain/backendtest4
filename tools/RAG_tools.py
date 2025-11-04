@@ -814,8 +814,7 @@ Create a comprehensive diagnostic report that STRICTLY follows this EXACT format
 
 **Possible Solutions:**
 • [solution 1]
-• [solution 2]
-• [continue until you have up to 2 solutions, be specific and technical]
+• [continue until you have up to 1 solutions, be specific and technical]
 
 CRITICAL REQUIREMENTS:
 - Use ONLY plain text and bullet points (•)
