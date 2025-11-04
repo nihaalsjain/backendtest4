@@ -621,6 +621,10 @@ def format_diagnostic_results(
 ) -> dict:
     """Format the final diagnostic results with proper structure for frontend."""
     logger.info("📝 Formatting final results")
+    logger.info(f"🎬 format_diagnostic_results received youtube_results: {type(youtube_results)}, count: {len(youtube_results) if youtube_results else 0}")
+    if youtube_results:
+        for idx, vid in enumerate(youtube_results[:3]):  # Log first 3
+            logger.info(f"  Input video {idx}: {vid}")
     
     print(f"🔍 DEBUG: Received relevance_score = {relevance_score}")
     
@@ -770,6 +774,10 @@ def format_diagnostic_results(
         processed_rag_content = re.sub(r'\s{2,}', ' ', processed_rag_content)
 
         voice_summary = create_voice_summary(processed_rag_content, question)
+
+        logger.info(f"📺 RAG_tools returning {len(structured_youtube_videos)} YouTube videos")
+        for idx, vid in enumerate(structured_youtube_videos):
+            logger.info(f"  Video {idx}: url={vid.get('url', '')[:80]}, video_id={vid.get('video_id', 'N/A')}")
 
         return {
             "formatted_response": {

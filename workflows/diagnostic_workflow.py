@@ -766,14 +766,18 @@ REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowled
                                     
                                     # Strip any embedded HTML blobs inside youtube_videos entries
                                     vids = text_output.get('youtube_videos', []) or []
+                                    logger.info(f"🎬 Backend sanitization: Processing {len(vids)} YouTube videos")
                                     cleaned_vids = []
-                                    for v in vids:
+                                    for idx, v in enumerate(vids):
                                         if not isinstance(v, dict):
+                                            logger.warning(f"⚠️ Video {idx} is not a dict: {type(v)}")
                                             continue
                                         raw_url = v.get('url', '')
+                                        logger.info(f"🔍 Video {idx}: raw_url='{raw_url[:100]}...'")
                                         # Extract first clean YouTube URL
                                         m = _re.search(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[A-Za-z0-9_-]+|youtu\.be/[A-Za-z0-9_-]+)', raw_url or '')
                                         if not m:
+                                            logger.warning(f"❌ Video {idx} filtered: No YouTube URL match in '{raw_url[:100]}'")
                                             continue
                                         clean_url = m.group(0)
                                         video_id = m.group(0).split('v=')[-1].split('/')[-1]
@@ -789,6 +793,8 @@ REMEMBER: You are a RAG assistant, not a general automotive expert. Your knowled
                                             'thumbnail': thumb,
                                             'video_id': video_id
                                         })
+                                        logger.info(f"✅ Video {idx} cleaned: url={clean_url}, video_id={video_id}, title={title[:50]}")
+                                    logger.info(f"📦 Backend sanitization complete: {len(cleaned_vids)} videos kept out of {len(vids)}")
                                     text_output['youtube_videos'] = cleaned_vids
                                     
                                     # Ensure content has no inline full video blocks
