@@ -663,18 +663,25 @@ def format_diagnostic_results(
     if youtube_results:
         for video in youtube_results[:4]:  # Limit to 4 YouTube videos
             if "url" in video:
-                video_id = extract_youtube_video_id(video["url"])
+                # Normalize URL: strip whitespace and newlines to prevent JSON contamination
+                clean_url = video["url"].strip().replace('\n', '').replace('\r', '')
+                video_id = extract_youtube_video_id(clean_url)
                 
                 # Use the thumbnail from the video data, fallback to constructed URL
                 thumbnail_url = video.get("thumbnail", f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg")
+                if thumbnail_url:
+                    thumbnail_url = thumbnail_url.strip().replace('\n', '').replace('\r', '')
                 
                 # Ensure we don't use the default fallback image
                 if "default/default.jpg" in thumbnail_url:
                     thumbnail_url = f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"
                 
+                # Normalize title to prevent JSON issues
+                clean_title = video.get("title", "Diagnostic Video").strip()
+                
                 structured_youtube_videos.append({
-                    "url": video["url"],
-                    "title": video.get("title", "Diagnostic Video"),
+                    "url": clean_url,
+                    "title": clean_title,
                     "thumbnail": thumbnail_url,
                     "video_id": video_id
                 })
