@@ -740,10 +740,23 @@ Create a comprehensive diagnostic report that STRICTLY follows this EXACT format
 
 **Category:** [one-line description of what this DTC code represents]
 
+**Potential Causes:**
+
+• [cause 1]
+• [cause 2]
+• [continue until you have up to 5 causes, be specific and technical]
+
+**Diagnostic Steps:**
+
+• [step 1]
+• [step 2]
+• [continue until you have up to 5 clear diagnostic steps]
 
 **Possible Solutions:**
 • [solution 1]
-• [continue until you have up to 1 solutions, be specific and technical]
+• [solution 2]
+• [solution 3]
+• [continue until you have up to 5 solutions, be specific and technical]
 
 Your response MUST follow this format exactly, with these exact section headings.
 Be concise and technical in your bullet points. Do not add any other sections or explanations.
