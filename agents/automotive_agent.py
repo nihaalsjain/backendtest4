@@ -139,8 +139,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     voice_base = cfg_box["voiceBase"]
     logger.info(f"Using config: language={lang}, voiceBase={voice_base}")
     config_dict = get_simplified_config(lang, voice_base)
+    
     # Create session and assistant
     session = AgentSession(**config_dict)
+    
+    # ✅ NEW: Set room reference on DiagnosticLLMAdapter if it exists
+    if "llm" in config_dict and hasattr(config_dict["llm"], "room"):
+        config_dict["llm"].room = ctx.room
+        logger.info("✅ Set room reference on DiagnosticLLMAdapter for data channel publishing")
+    
     assistant = Assistant()
     try:
         # Start session

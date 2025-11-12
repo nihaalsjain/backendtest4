@@ -828,13 +828,14 @@ from typing import Any
 class DiagnosticLLMAdapter(LLM):
     """
     Adapter that implements LiveKit LLM interface using async agent internally,
-    with enforced target language.
+    with enforced target language. Publishes diagnostic data via data channel.
     """
-    def __init__(self, target_language: str = "en"):
+    def __init__(self, target_language: str = "en", room=None):
         super().__init__()
         self._agent: Optional[AsyncDiagnosticAgent] = None
         self._loop = None
         self.target_language = (target_language or "en").lower()
+        self.room = room  # Store room reference for data channel publishing
         if self.target_language not in {"en", "hi", "kn"}:
             self.target_language = "en"
 
@@ -881,6 +882,7 @@ class DiagnosticLLMAdapter(LLM):
             chat_ctx=chat_ctx,
             tools=tools,
             conn_options=conn_options or DEFAULT_API_CONNECT_OPTIONS,
+            room=self.room,  # Pass room to stream
         )
 
     async def aclose(self):
@@ -891,13 +893,17 @@ class DiagnosticLLMAdapter(LLM):
 class DiagnosticLLMStream(LLMStream):
     """
     Stream implementation for the DiagnosticLLMAdapter.
+    Sends voice output to TTS and diagnostic data via data channel.
     """
-    def __init__(self, llm: DiagnosticLLMAdapter, agent: AsyncDiagnosticAgent, message: str, chat_ctx, tools=None, conn_options=None):
+    def __init__(self, llm: DiagnosticLLMAdapter, agent: AsyncDiagnosticAgent, message: str, chat_ctx, tools=None, conn_options=None, room=None):
         if conn_options is None:
             conn_options = DEFAULT_API_CONNECT_OPTIONS
         super().__init__(llm, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
         self._agent = agent
         self._message = message
+        self._room = room  # Store room reference
+        self._response_sent = False
+        self._response_future = None
         self._response_future = None
         self._response_sent = False
 
@@ -936,7 +942,10 @@ class DiagnosticLLMStream(LLMStream):
             )
 
     async def _get_response(self) -> str:
-        """Get the response from the diagnostic agent and handle structured format."""
+        """
+        Get the response from the diagnostic agent and handle structured format.
+        Publishes text_output via data channel, returns voice_output for TTS.
+        """
         try:
             response = await self._agent.chat(self._message)
             
@@ -957,11 +966,21 @@ class DiagnosticLLMStream(LLMStream):
                         voice_output = formatted_data.get('voice_output', '')
                         text_output = formatted_data.get('text_output', {})
                         
-                        # Format the response for LiveKit using the VOICE|||TEXT pattern
-                        formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
-                        logger.info(f"📡 Sending structured response to LiveKit: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                        # ✅ NEW: Publish diagnostic data via data channel
+                        if self._room and text_output:
+                            try:
+                                # Publish to data channel with topic 'diagnostic_report'
+                                await self._room.local_participant.publish_data(
+                                    json.dumps(text_output).encode('utf-8'),
+                                    topic="diagnostic_report",
+                                    reliable=True  # Ensure delivery
+                                )
+                                logger.info(f"📡 Published diagnostic data via data channel: web_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                            except Exception as e:
+                                logger.error(f"Failed to publish data to channel: {e}")
                         
-                        return formatted_response
+                        # ✅ Return ONLY voice output for TTS (no TEXT payload)
+                        return voice_output
                 
                 # Check for direct structured format (legacy)
                 elif (isinstance(parsed_response, dict) and 
@@ -972,11 +991,20 @@ class DiagnosticLLMStream(LLMStream):
                     voice_output = parsed_response.get('voice_output', '')
                     text_output = parsed_response.get('text_output', {})
                     
-                    # Format the response for LiveKit using the VOICE|||TEXT pattern
-                    formatted_response = f"VOICE:{voice_output}|||TEXT:{json.dumps(text_output)}"
-                    logger.info(f"📡 Sending structured response to LiveKit: voice_len={len(voice_output)}, text_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                    # ✅ NEW: Publish diagnostic data via data channel
+                    if self._room and text_output:
+                        try:
+                            await self._room.local_participant.publish_data(
+                                json.dumps(text_output).encode('utf-8'),
+                                topic="diagnostic_report",
+                                reliable=True
+                            )
+                            logger.info(f"📡 Published diagnostic data via data channel: web_sources={len(text_output.get('web_sources', []))}, youtube_videos={len(text_output.get('youtube_videos', []))}")
+                        except Exception as e:
+                            logger.error(f"Failed to publish data to channel: {e}")
                     
-                    return formatted_response
+                    # ✅ Return ONLY voice output for TTS
+                    return voice_output
                 else:
                     # Not a recognized structured response, return as-is
                     logger.info("📝 Received plain text response from diagnostic agent")

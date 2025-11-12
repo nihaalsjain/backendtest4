@@ -18,9 +18,9 @@ COMMON_CONFIG = {
 class LanguageConfig:
     """Base configuration class for all languages."""
     @staticmethod
-    def get_diagnostic_llm(language: str = "en"):
+    def get_diagnostic_llm(language: str = "en", room=None):
         """Get the diagnostic agent wrapped as LLM adapter, with language enforced."""
-        return DiagnosticLLMAdapter(target_language=language)
+        return DiagnosticLLMAdapter(target_language=language, room=room)
 
     @classmethod
     def get_base_config(cls):
